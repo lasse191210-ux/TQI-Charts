@@ -6,11 +6,13 @@ import { DataHub } from './datafeed.js';
 import { TYPES } from './indicators.js';
 import { OverlayPrimitive, Scene } from './render/overlay.js';
 import { Drawings } from './render/drawings.js';
-import { buildDayProfiles, autoRowSize } from './calc/profile.js';
+import { TpoPaneView, buildTpoSessions } from './render/tpo.js';
+import { buildDayProfiles, autoRowSize, firstTouch } from './calc/profile.js';
 import { heikinAshi } from './calc/std.js';
 import * as U from './util.js';
 import { UI } from './ui.js';
 
+const TPO_BLOCKS = ['5m', '15m', '30m', '1h'];
 const INITIAL_BARS = { '1m': 1500, '3m': 1500, '5m': 1500, '15m': 1500, '30m': 1500, '1h': 1500, '2h': 1200, '4h': 1200, '6h': 1000, '12h': 1000, '1D': 1000, '1W': 400, '1M': 150 };
 
 export class App {
@@ -73,6 +75,8 @@ export class App {
     return { ...base, candles };
   }
   get display() { return this.state.display; }
+  get isTpo() { return this.state.chartType === 'tpo'; }
+  get tpoBlockMs() { return U.tfMs(this.state.tpo.block); }
   get tz() { return this.state.tz === 'utc' ? 'UTC' : U.localTz(); }
   get offset() { return (this.state.sessionOffsetMin || 0) * U.MIN; }
   fmt(p, dec) { return U.fmtPrice(p, dec ?? this.priceDec); }
@@ -94,7 +98,7 @@ export class App {
       layout: {
         background: { type: 'solid', color: th.bg }, textColor: th.text, fontSize: 11,
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif',
-        attributionLogo: true,
+        attributionLogo: false,
         panes: { separatorColor: th.border, separatorHoverColor: 'rgba(120,123,134,0.25)', enableResize: true },
       },
       grid: { vertLines: { color: th.grid }, horzLines: { color: th.grid } },
@@ -153,7 +157,10 @@ export class App {
     const c = this.theme.candles;
     const fmt = { type: 'custom', formatter: (p) => U.fmtPrice(p, this.priceDec), minMove: Math.pow(10, -this.priceDec) };
     const type = this.state.chartType;
-    if (type === 'bars') this.series = this.chart.addSeries(BarSeries, { upColor: c.borderUp === '#131722' ? '#131722' : c.up, downColor: c.down, thinBars: false, priceFormat: fmt });
+    if (type === 'tpo') {
+      this.tpoView = new TpoPaneView(this);
+      this.series = this.chart.addCustomSeries(this.tpoView, { priceFormat: fmt, priceLineVisible: true, lastValueVisible: true, priceLineColor: '#e91e63' });
+    } else if (type === 'bars') this.series = this.chart.addSeries(BarSeries, { upColor: c.borderUp === '#131722' ? '#131722' : c.up, downColor: c.down, thinBars: false, priceFormat: fmt });
     else if (type === 'line') this.series = this.chart.addSeries(LineSeries, { color: '#2962ff', lineWidth: 2, priceFormat: fmt });
     else if (type === 'area') this.series = this.chart.addSeries(AreaSeries, { lineColor: '#2962ff', topColor: 'rgba(41,98,255,0.28)', bottomColor: 'rgba(41,98,255,0.02)', lineWidth: 2, priceFormat: fmt });
     else {
@@ -197,6 +204,7 @@ export class App {
 
   seriesData(view) {
     const t = this.state.chartType;
+    if (t === 'tpo') return view.map(b => ({ time: b.t / 1000, o: b.o, h: b.h, l: b.l, c: b.c }));
     if (t === 'line' || t === 'area') return view.map(b => ({ time: b.t / 1000, value: b.c }));
     return view.map(b => ({ time: b.t / 1000, open: b.o, high: b.h, low: b.l, close: b.c }));
   }
@@ -238,8 +246,8 @@ export class App {
     this.priceDec = U.priceDecimals(this.bars[this.bars.length - 1]?.c || 1);
     this.makeMainSeries();
     this.fullRender();
-    this.chart.timeScale().applyOptions({ barSpacing: 7, rightOffset: 12 });
-    this.chart.timeScale().scrollToRealTime();
+    if (!this.isTpo) this.chart.timeScale().scrollToRealTime();
+    this.applySpacing();
     this.ui.setLoading(false);
     this.drawings.load();
     this.hub.startLive(mk, base, tf);
@@ -326,7 +334,7 @@ export class App {
     let profCache;
     const store = (t) => { const s = app.hub.stores.get(`${mk}|${base}|${t}`); return s && s.bars.length ? s : null; };
     return {
-      bars: this.bars, tf, tfMs: U.tfMs(tf), now: Date.now(), offset: this.offset,
+      bars: this.bars, tf, tfMs: U.tfMs(tf), now: Date.now(), offset: this.offset, isTpo: this.isTpo,
       market: this.market, base, theme: this.theme, display: this.display,
       store,
       rowSize: () => this.rowSize(),
@@ -342,6 +350,30 @@ export class App {
       bigTrades: (min) => { const m = min > 0 ? min : this.autoBigUsd(); return this.big.filter(x => x.usd >= m); },
       liqs: () => this.liqList,
     };
+  }
+
+  tpoRowSize() { return this.state.tpo.rowSize > 0 ? this.state.tpo.rowSize : this.rowSize(); }
+
+  /** TPO-Profile je Session berechnen, Achsen-Labels und Naked POCs ergänzen. */
+  updateTpo(scene, ctx) {
+    const o = this.state.tpo;
+    const sessions = buildTpoSessions(this.bars, { rowSize: this.tpoRowSize(), offset: this.offset, blockMs: this.tpoBlockMs, vaPct: o.vaPct, ibMin: o.ibMin });
+    this.tpoSessions = sessions;
+    this.tpoView.setSessions(sessions, o);
+    const cur = sessions[sessions.length - 1];
+    const th = this.theme;
+    if (cur) {
+      if (o.poc && cur.poc != null) scene.axisLabel(cur.poc, null, '#e91e63', '#fff');
+      if (o.va && cur.vah != null) { scene.axisLabel(cur.vah, null, th.dark ? '#6d4fc2' : '#7c3aed', '#fff'); scene.axisLabel(cur.val, null, th.dark ? '#6d4fc2' : '#7c3aed', '#fff'); }
+    }
+    if (o.nakedPoc) {
+      const done = sessions.slice(Math.max(0, sessions.length - 41), -1);
+      for (const s of done) {
+        if (s.poc == null || s.n < 4) continue;
+        if (firstTouch(this.bars, s.end, s.poc, s.poc) != null) continue;
+        scene.level({ p: s.poc, from: s.start, color: 'rgba(220,40,40,0.85)', dash: 'dashed', label: 'nPOC ' + U.fmtDayLabel(s.start), lc: '#dc2828' });
+      }
+    }
   }
 
   rowSize() {
@@ -370,6 +402,7 @@ export class App {
       if (!ind.visible || !d || !T.draw) continue;
       try { T.draw(ind.s, d, scene, ctx); } catch (e) { console.error(ind.type, e); }
     }
+    if (this.isTpo && this.tpoView) this.updateTpo(scene, ctx);
     // überzählige Panels entfernen
     for (const uid of [...this.panes.keys()]) if (!this.state.indicators.some(x => x.uid === uid)) this.removePane(uid);
     this.overlay.setScene(scene);
@@ -595,8 +628,60 @@ export class App {
     if (market) patch.market = market;
     this.setState(patch, { reload: true });
   }
-  setTf(tf) { if (tf !== this.state.tf) this.setState({ tf }, { reload: true }); }
-  setChartType(t) { this.state.chartType = t; this._save(); this.view = this.makeView(); this.makeMainSeries(); this.ui.renderAll(); }
+  setTf(tf) {
+    if (tf === this.state.tf) return;
+    const patch = { tf };
+    if (this.isTpo) {
+      if (TPO_BLOCKS.includes(tf)) patch.tpo = { ...this.state.tpo, block: tf };
+      else { patch.chartType = 'candles'; this.ui.toast('TPO gibt es mit 5, 15, 30 oder 60 Min. pro Buchstabe – zurück zu Kerzen', 'info', 3000); }
+    }
+    this.setState(patch, { reload: true });
+  }
+  setChartType(t) {
+    const wasTpo = this.isTpo;
+    this.state.chartType = t;
+    this._save();
+    // TPO nutzt immer die eingestellte TPO-Periode (Standard 30 Min. wie ATAS)
+    if (t === 'tpo' && this.state.tf !== this.state.tpo.block) { this.state.tf = this.state.tpo.block; this._save(); this.ui.renderAll(); this.loadSymbol(); return; }
+    this.view = this.makeView(); this.makeMainSeries(); this.applySpacing(); this.ui.renderAll();
+    if (t === 'tpo' || wasTpo) this.recompute(true);
+  }
+  /** TPO-Knopf: an = Market Profile (eigene Zeiteinheit), aus = vorheriger Charttyp und vorherige Zeiteinheit. */
+  toggleTpo() {
+    if (this.isTpo) {
+      const tf = this.state.lastTf;
+      this.state.lastTf = null;
+      if (tf && tf !== this.state.tf) { this.state.chartType = this.state.lastType || 'candles'; this.state.tf = tf; this._save(); this.ui.renderAll(); this.loadSymbol(); }
+      else this.setChartType(this.state.lastType || 'candles');
+    } else {
+      this.state.lastType = this.state.chartType;
+      this.state.lastTf = this.state.tf;
+      this.setChartType('tpo');
+    }
+  }
+  setTpo(patch) {
+    const block = patch.block && patch.block !== this.state.tpo.block ? patch.block : null;
+    this.state.tpo = { ...this.state.tpo, ...patch };
+    this._save();
+    if (block) { this.state.tf = block; this._save(); this.loadSymbol(); return; }
+    this.recompute(true);
+    this.ui.renderLegend();
+  }
+  /** Kerzenabstand: TPO braucht breite Spalten für die Buchstaben, rechts Platz bis Tagesende. */
+  applySpacing() {
+    const ts = this.chart.timeScale();
+    if (this.isTpo) {
+      const perDay = Math.round(U.DAY / this.tpoBlockMs);
+      const last = this.bars[this.bars.length - 1];
+      const done = last ? Math.floor((last.t - U.periodStart(last.t, 'day', this.offset)) / this.tpoBlockMs) + 1 : 0;
+      ts.applyOptions({ barSpacing: this.ui.mobile ? 7 : 10, rightOffset: Math.max(6, Math.min(perDay + 2, perDay - done + 3)), minBarSpacing: 0.5 });
+      // Ansicht: aktuelle Session ganz (Desktop zusätzlich die vorherige)
+      if (last) {
+        const start = U.lowerBound(this.bars, U.periodStart(last.t, 'day', this.offset));
+        requestAnimationFrame(() => ts.setVisibleLogicalRange({ from: start - (this.ui.mobile ? 1.5 : perDay + 1), to: start + perDay + 1.5 }));
+      }
+    } else ts.applyOptions({ barSpacing: 7, rightOffset: 12 });
+  }
   setTheme(theme) { this.state.theme = theme; this._save(); this.applyTheme(); this.ui.renderAll(); }
 
   /** Zeitraum-Knöpfe unten (wie TradingView: Zeitraum + passende Zeiteinheit). */

@@ -41,6 +41,7 @@ export const ICON = {
   bars: s('<path d="M9 5v18M6 9h3M9 19h3M19 7v15M16 18h3M19 10h3"/>'),
   line: s('<path d="M4 20l6-7 5 4 9-10"/>'),
   area: s('<path d="M4 20l6-7 5 4 9-10v16H4z" fill="currentColor" fill-opacity=".2"/><path d="M4 20l6-7 5 4 9-10"/>'),
+  tpo: s('<path d="M5 6h4M5 10h8M5 14h12M5 18h7M5 22h3" stroke-width="2.2"/><path d="M21 4v20" stroke-width="1.2"/>'),
   ha: s('<path d="M9 4v4M9 20v4M19 6v3M19 19v3"/><rect x="6" y="8" width="6" height="12" rx="3" fill="currentColor"/><rect x="16" y="9" width="6" height="10" rx="3"/>'),
   more: s('<circle cx="7" cy="14" r="1.6" fill="currentColor"/><circle cx="14" cy="14" r="1.6" fill="currentColor"/><circle cx="21" cy="14" r="1.6" fill="currentColor"/>'),
   pencil: s('<path d="M6 22l1-5L18 6l4 4L11 21z"/><path d="M16 8l4 4"/>'),
@@ -50,7 +51,7 @@ export const ICON = {
   copy: s('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M6 18V7a1 1 0 0 1 1-1h11"/>'),
 };
 export const TOOL_ICON = { cursor: 'cursor', trend: 'trend', ray: 'ray', hline: 'hline', hray: 'hray', vline: 'vline', rect: 'rect', fib: 'fib', measure: 'measure', text: 'text', long: 'long', short: 'short' };
-export const CHART_TYPES = [['candles', 'Kerzen'], ['hollow', 'Hohle Kerzen'], ['bars', 'Balken'], ['line', 'Linie'], ['area', 'Fläche'], ['ha', 'Heikin Ashi']];
+export const CHART_TYPES = [['tpo', 'TPO (Market Profile)'], ['candles', 'Kerzen'], ['hollow', 'Hohle Kerzen'], ['bars', 'Balken'], ['line', 'Linie'], ['area', 'Fläche'], ['ha', 'Heikin Ashi']];
 const COIN_COLORS = { BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', XRP: '#23292f', BNB: '#f3ba2f', DOGE: '#c2a633', HYPE: '#50e3c2', SUI: '#4da2ff', LINK: '#2a5ada', AVAX: '#e84142', ADA: '#0033ad', TRX: '#ff060a', TON: '#0098ea', LTC: '#345d9d', PEPE: '#3d8b37', ETC: '#328332' };
 export function coinBadge(base, size = 22) {
   const c = COIN_COLORS[base] || '#787b86';

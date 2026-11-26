@@ -67,7 +67,7 @@ const vwap = {
     const greyBg = th.dark ? '#4a4d57' : '#9598a1';
     const bands = [];
     for (let k = 1; k <= 4; k++) if (s['b' + k]) bands.push({ k, m: s['m' + k], ...bandArrays(d.vwap, d.sd, s['m' + k]) });
-    if (s.zones && s.b1) { const b1 = bands.find(b => b.k === 1); sc.fill(b1.up, b1.dn, { color: rgba(s.color, s.zoneOpacity), breaks: br }); }
+    if (s.zones && s.b1) { const b1 = bands.find(b => b.k === 1); sc.fill(b1.up, b1.dn, { color: rgba(s.color, s.zoneOpacity * (c.isTpo ? 0.45 : 1)), breaks: br }); }
     if (s.outer) {
       for (let j = 1; j < bands.length; j++) {
         sc.fill(bands[j].up, bands[j - 1].up, { color: rgba(s.bandColor, 0.05 + 0.02 * j), breaks: br });

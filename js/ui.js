@@ -38,6 +38,7 @@ export class UI {
     $('#tfMore').onclick = (e) => this.openTfPop(e.currentTarget);
     $('#typeBtn').onclick = (e) => this.openTypePop(e.currentTarget);
     $('#indBtn').onclick = () => this.openIndicatorDialog();
+    $('#tpoBtn').onclick = () => this.app.toggleTpo();
     $('#tplBtn').onclick = (e) => this.openTemplatePop(e.currentTarget);
     $('#themeBtn').onclick = () => a.setTheme(a.state.theme === 'dark' ? 'light' : 'dark');
     $('#setBtn').onclick = () => this.openSettings();
@@ -72,7 +73,9 @@ export class UI {
     $('#symBtn').innerHTML = `${coinBadge(st.base, 20)}<span class="sym-t">${esc(m.ticker(st.base))}</span><span class="sym-x">${m.badge}</span>`;
     $('#tfs').innerHTML = st.favTfs.map(tf => `<button class="tb tf ${tf === st.tf ? 'on' : ''}" data-tf="${tf}">${TF_SHORT[tf]}</button>`).join('') + (st.favTfs.includes(st.tf) ? '' : `<button class="tb tf on" data-tf="${st.tf}">${TF_SHORT[st.tf]}</button>`);
     $$('#tfs [data-tf]').forEach(b => b.onclick = () => a.setTf(b.dataset.tf));
-    $('#typeBtn').innerHTML = ICON[st.chartType] || ICON.candles;
+    $('#typeBtn').innerHTML = ICON[st.chartType === 'tpo' ? (st.lastType || 'candles') : st.chartType] || ICON.candles;
+    $('#tpoBtn').innerHTML = `${ICON.tpo}<span>TPO</span>`;
+    $('#tpoBtn').classList.toggle('on', st.chartType === 'tpo');
     $('#typeBtn').title = 'Charttyp: ' + (CHART_TYPES.find(x => x[0] === st.chartType)?.[1] || '');
     $('#themeBtn').innerHTML = st.theme === 'dark' ? ICON.sun : ICON.moon;
     $('#themeBtn').title = st.theme === 'dark' ? 'Helles Design (wie TradingView-Bild)' : 'Dunkles Design';
@@ -151,6 +154,7 @@ export class UI {
         <span class="lg-ohlc" id="lgOhlc"></span>
       </div>
       <div class="lg-inds ${st.legendOpen ? '' : 'closed'}">
+        ${a.isTpo ? `<div class="lg-row lg-ind" data-tpo="1"><span class="lg-title">TPO ${st.tpo.block} · Zeile ${a.fmt(a.tpoRowSize())} · VA ${st.tpo.vaPct} %</span><span class="lg-vals" id="tpoVals"></span><span class="lg-acts"><button data-act="tposet" title="TPO-Einstellungen">${ICON.gear}</button></span></div>` : ''}
         ${main.map(x => this.legendRow(x)).join('')}
       </div>
       ${main.length ? `<button class="lg-toggle" data-act="lgtoggle" title="Indikatoren ein-/ausklappen">${st.legendOpen ? ICON.chevUp : ICON.chev}<span>${main.length}</span></button>` : ''}`;
@@ -178,6 +182,7 @@ export class UI {
     }
     const a = this.app;
     if (b.dataset.act === 'lgtoggle') { a.state.legendOpen = !a.state.legendOpen; a._save(); this.renderLegend(); return; }
+    if (b.dataset.act === 'tposet') { this.openTpoSettings(); return; }
     const uid = b.closest('[data-uid]')?.dataset.uid;
     if (!uid) return;
     if (b.dataset.act === 'eye') a.toggleIndicator(uid);
@@ -194,7 +199,12 @@ export class UI {
     const cls = b.c >= b.o ? 'up' : 'dn';
     const o = $('#lgOhlc');
     if (o) o.innerHTML = `<span>O<b class="${cls}">${a.fmt(b.o)}</b></span><span>H<b class="${cls}">${a.fmt(b.h)}</b></span><span>L<b class="${cls}">${a.fmt(b.l)}</b></span><span>C<b class="${cls}">${a.fmt(b.c)}</b></span><b class="${ch >= 0 ? 'up' : 'dn'} chg">${ch >= 0 ? '+' : '−'}${a.fmt(Math.abs(ch))} (${fmtPct(chp)})</b>`;
-    for (const row of $$('#legend .lg-ind')) {
+    const tv = $('#tpoVals');
+    if (tv && a.tpoSessions?.length) {
+      const s = a.tpoSessions.find(x => i >= x.first && i < x.first + x.n) || a.tpoSessions[a.tpoSessions.length - 1];
+      tv.innerHTML = s && s.poc != null ? `<span class="muted">POC</span><b style="color:#e91e63">${a.fmt(s.poc)}</b><span class="muted">VA</span><b style="color:#7c3aed">${a.fmt(s.val)} – ${a.fmt(s.vah)}</b><span class="muted">IB</span><b style="color:#2962ff">${a.fmt(s.ibLo)} – ${a.fmt(s.ibHi)}</b>` : '';
+    }
+    for (const row of $$('#legend .lg-ind[data-uid]')) {
       const ind = a.state.indicators.find(x => x.uid === row.dataset.uid);
       const T = ind && TYPES[ind.type];
       const d = ind && a.data.get(ind.uid);
@@ -473,11 +483,13 @@ export class UI {
     const a = this.app, st = a.state;
     $('#mbar').innerHTML = `
       <button class="mb-pill" id="mbSym">${coinBadge(st.base, 22)}<b>${esc(a.market.ticker(st.base))}</b><span>${TF_SHORT[st.tf]}</span></button>
+      <button class="mb-btn mb-tpo ${st.chartType === 'tpo' ? 'on' : ''}" id="mbTpo" title="TPO / Market Profile">TPO</button>
       <button class="mb-btn ${$('#tools').classList.contains('mopen') ? 'on' : ''}" id="mbDraw" title="Zeichnen">${ICON.pencil}</button>
       <button class="mb-btn" id="mbInd" title="Indikatoren">${ICON.fx}</button>
       <button class="mb-btn" id="mbMore" title="Mehr">${ICON.more}</button>`;
     $('#mbSym').onclick = () => this.openMobileSymTf();
     $('#mbDraw').onclick = () => { $('#tools').classList.toggle('mopen'); this.renderMobile(); };
+    $('#mbTpo').onclick = () => this.app.toggleTpo();
     $('#mbInd').onclick = () => this.openIndicatorDialog();
     $('#mbMore').onclick = () => this.openMoreSheet();
   }
@@ -703,6 +715,37 @@ export class UI {
     $('#fOk', body).onclick = () => { clearTimeout(tmr); apply(); close(); };
   }
 
+  openTpoSettings() {
+    const a = this.app;
+    const schema = [
+      { sec: 'Profil' },
+      { k: 'block', label: 'Zeit pro Buchstabe', t: 'select', opts: [['5m', '5 Minuten'], ['15m', '15 Minuten'], ['30m', '30 Minuten (klassisch)'], ['1h', '60 Minuten']] },
+      { k: 'rowSize', label: 'Zeilengröße in Preis (0 = automatisch)', t: 'num', min: 0, max: 100000, step: 0.01 },
+      { k: 'vaPct', label: 'Value Area (%)', t: 'int', min: 50, max: 95 },
+      { k: 'ibMin', label: 'Initial Balance (Minuten)', t: 'int', min: 5, max: 480 },
+      { sec: 'Darstellung' },
+      { k: 'display', label: 'TPOs als', t: 'select', opts: [['auto', 'automatisch (Buchstaben beim Reinzoomen)'], ['letters', 'Buchstaben'], ['blocks', 'Blöcke']] },
+      { k: 'colors', label: 'Farben', t: 'select', opts: [['gradient', 'Verlauf über den Tag'], ['mono', 'einfarbig']] },
+      { k: 'poc', label: 'POC', t: 'bool' },
+      { k: 'va', label: 'Value Area (VAH / VAL)', t: 'bool' },
+      { k: 'vaFill', label: 'Value Area hinterlegen', t: 'bool' },
+      { k: 'extendVa', label: 'VA-Linien bis Tagesende', t: 'bool' },
+      { k: 'ib', label: 'Initial Balance (blauer Balken)', t: 'bool' },
+      { k: 'openClose', label: 'Open / Close markieren', t: 'bool' },
+      { k: 'singles', label: 'Single Prints hervorheben', t: 'bool' },
+      { k: 'nakedPoc', label: 'Naked POCs nach rechts verlängern', t: 'bool' },
+      { k: 'vp', label: 'Volumenprofil rechts', t: 'bool' },
+      { k: 'vpWidth', label: 'Breite Volumenprofil (Anteil)', t: 'num', min: 0.1, max: 0.8, step: 0.05 },
+    ];
+    const cur = { ...a.state.tpo };
+    const body = el(`<div class="setdlg"><div class="form">${formHtml(schema, cur)}</div>
+      <div class="dlg-foot"><button class="tb" id="tReset">Standard</button><div class="grow"></div><button class="tb primary" id="tOk">Fertig</button></div></div>`);
+    const close = this.modal('TPO (Market Profile)', body);
+    body.addEventListener('change', (e) => { readField(e.target, cur); a.setTpo({ ...cur }); });
+    $('#tOk', body).onclick = close;
+    $('#tReset', body).onclick = () => { close(); a.setTpo({ block: '30m', rowSize: 0, display: 'auto', colors: 'gradient', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false }); };
+  }
+
   openSettings() {
     const a = this.app, st = a.state;
     const schema = [
@@ -725,7 +768,7 @@ export class UI {
       <div class="info-box">
         <b>${APP.name} ${APP.version}</b><br>
         Daten: öffentliche Schnittstellen von Binance, Bybit, OKX und Coinbase, direkt im Browser. Einstellungen, Zeichnungen und Watchlist werden nur in diesem Browser gespeichert.<br>
-        Charts: <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener">TradingView Lightweight Charts™</a> (Apache-2.0).<br>
+        Charts: TradingView Lightweight Charts™ Copyright (c) 2026 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener">tradingview.com</a> (Apache-2.0).<br>
         Aktuelle TPO-Zeile: ${a.fmt(a.rowSize())} · Kerzen geladen: ${nf(0).format(a.bars.length)}
       </div>
       <div class="dlg-foot"><button class="tb danger" id="sReset">Alles zurücksetzen</button><div class="grow"></div><button class="tb primary" id="sOk">Fertig</button></div></div>`);

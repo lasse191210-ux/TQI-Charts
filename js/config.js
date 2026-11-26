@@ -52,8 +52,9 @@ export const TEMPLATES = {
 };
 
 export const DEFAULT_STATE = {
-  market: 'binance-perp', base: 'BTC', tf: '15m', chartType: 'candles',
-  theme: 'dark', candles: 'auto', tz: 'local', sessionOffsetMin: 0,
+  market: 'binance-perp', base: 'BTC', tf: '15m', chartType: 'candles', lastType: 'candles',
+  tpo: { block: '30m', rowSize: 0, display: 'auto', colors: 'gradient', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false },
+  theme: 'light', candles: 'auto', tz: 'local', sessionOffsetMin: 0,
   template: 'bild', indicators: null,
   watchlist: ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE', 'SUI', 'LINK', 'AVAX', 'ADA', 'LTC'],
   favTfs: ['1m', '5m', '15m', '1h', '4h', '1D'],
