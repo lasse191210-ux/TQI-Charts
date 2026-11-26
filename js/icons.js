@@ -1,0 +1,59 @@
+// Linien-Symbole im TradingView-Stil (28×28, Strichstärke 1.5).
+const s = (body, vb = 28) => `<svg viewBox="0 0 ${vb} ${vb}" width="${vb}" height="${vb}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+export const ICON = {
+  cursor: s('<path d="M14 5v18M5 14h18"/>'),
+  trend: s('<path d="M6 22L22 6"/><circle cx="6" cy="22" r="2" fill="currentColor"/><circle cx="22" cy="6" r="2" fill="currentColor"/>'),
+  ray: s('<path d="M6 21L25 7"/><circle cx="6" cy="21" r="2" fill="currentColor"/><circle cx="13" cy="16" r="2" fill="currentColor"/>'),
+  hline: s('<path d="M3 14h22"/><circle cx="14" cy="14" r="2" fill="currentColor"/>'),
+  hray: s('<path d="M8 14h17"/><circle cx="8" cy="14" r="2" fill="currentColor"/>'),
+  vline: s('<path d="M14 3v22"/><circle cx="14" cy="14" r="2" fill="currentColor"/>'),
+  rect: s('<rect x="5" y="8" width="18" height="12" rx="1"/><circle cx="5" cy="8" r="1.8" fill="currentColor"/><circle cx="23" cy="20" r="1.8" fill="currentColor"/>'),
+  fib: s('<path d="M4 6h20M4 11h20M4 15h20M4 19h20M4 23h20" stroke-width="1.2"/><path d="M6 23L22 6" stroke-dasharray="2 2"/>'),
+  measure: s('<path d="M14 5v18M10 9l4-4 4 4M10 19l4 4 4-4M5 14h18"/>'),
+  text: s('<path d="M7 7h14M14 7v15M11 22h6"/>'),
+  long: s('<rect x="5" y="5" width="18" height="9" fill="#26a69a" fill-opacity=".25" stroke="#26a69a"/><rect x="5" y="14" width="18" height="7" fill="#ef5350" fill-opacity=".25" stroke="#ef5350"/>'),
+  short: s('<rect x="5" y="5" width="18" height="7" fill="#ef5350" fill-opacity=".25" stroke="#ef5350"/><rect x="5" y="12" width="18" height="9" fill="#26a69a" fill-opacity=".25" stroke="#26a69a"/>'),
+  magnet: s('<path d="M8 6v8a6 6 0 0 0 12 0V6"/><path d="M8 10h4M16 10h4M12 6v8a2 2 0 0 0 4 0V6"/>'),
+  lock: s('<rect x="7" y="13" width="14" height="10" rx="2"/><path d="M10 13V9a4 4 0 0 1 8 0v4"/>'),
+  unlock: s('<rect x="7" y="13" width="14" height="10" rx="2"/><path d="M10 13V9a4 4 0 0 1 7.5-2"/>'),
+  eye: s('<path d="M3 14s4-7 11-7 11 7 11 7-4 7-11 7S3 14 3 14z"/><circle cx="14" cy="14" r="3"/>'),
+  eyeOff: s('<path d="M3 14s4-7 11-7c2 0 3.8.6 5.3 1.5M25 14s-4 7-11 7c-2 0-3.8-.6-5.3-1.5"/><path d="M5 23L23 5"/>'),
+  trash: s('<path d="M6 8h16M11 8V6h6v2M8 8l1 15h10l1-15M12 12v7M16 12v7"/>'),
+  fx: s('<path d="M11 21c2 0 2-2 2.5-5L15 8c.4-2 1.5-3 3.5-3M10 12h7"/><path d="M18 14l5 6M23 14l-5 6"/>'),
+  grid: s('<rect x="5" y="5" width="8" height="8" rx="1.5"/><rect x="15" y="5" width="8" height="8" rx="1.5"/><rect x="5" y="15" width="8" height="8" rx="1.5"/><rect x="15" y="15" width="8" height="8" rx="1.5"/>'),
+  gear: s('<circle cx="14" cy="14" r="3.5"/><path d="M14 4v3M14 21v3M4 14h3M21 14h3M6.9 6.9l2.1 2.1M19 19l2.1 2.1M6.9 21.1L9 19M19 9l2.1-2.1"/>'),
+  camera: s('<path d="M5 9h4l2-3h6l2 3h4v13H5z"/><circle cx="14" cy="15" r="4"/>'),
+  full: s('<path d="M6 11V6h5M17 6h5v5M22 17v5h-5M11 22H6v-5"/>'),
+  sun: s('<circle cx="14" cy="14" r="4.5"/><path d="M14 3v2.5M14 22.5V25M3 14h2.5M22.5 14H25M6.2 6.2l1.8 1.8M20 20l1.8 1.8M6.2 21.8L8 20M20 8l1.8-1.8"/>'),
+  moon: s('<path d="M21.5 17.5A8.5 8.5 0 0 1 10.5 6.5a8.5 8.5 0 1 0 11 11z"/>'),
+  search: s('<circle cx="12.5" cy="12.5" r="6.5"/><path d="M17.5 17.5L23 23"/>'),
+  chev: s('<path d="M9 12l5 5 5-5"/>'),
+  chevUp: s('<path d="M9 16l5-5 5 5"/>'),
+  close: s('<path d="M8 8l12 12M20 8L8 20"/>'),
+  star: s('<path d="M14 5l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L14 18.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z"/>'),
+  starFill: s('<path d="M14 5l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L14 18.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z" fill="currentColor"/>'),
+  plus: s('<path d="M14 7v14M7 14h14"/>'),
+  list: s('<path d="M9 8h13M9 14h13M9 20h13"/><circle cx="5.5" cy="8" r="1" fill="currentColor"/><circle cx="5.5" cy="14" r="1" fill="currentColor"/><circle cx="5.5" cy="20" r="1" fill="currentColor"/>'),
+  tape: s('<path d="M6 7h16M6 11h10M6 15h16M6 19h8M6 23h12"/>'),
+  dom: s('<path d="M5 6h18M5 10h18M5 14h18M5 18h18M5 22h18" stroke-width="1"/><rect x="6" y="7" width="7" height="2" fill="#ef5350" stroke="none"/><rect x="6" y="11" width="10" height="2" fill="#ef5350" stroke="none"/><rect x="15" y="15" width="7" height="2" fill="#26a69a" stroke="none"/><rect x="12" y="19" width="10" height="2" fill="#26a69a" stroke="none"/>'),
+  candles: s('<path d="M9 4v4M9 20v4M19 6v3M19 19v3"/><rect x="6" y="8" width="6" height="12" rx="1" fill="currentColor"/><rect x="16" y="9" width="6" height="10" rx="1"/>'),
+  hollow: s('<path d="M9 4v4M9 20v4M19 6v3M19 19v3"/><rect x="6" y="8" width="6" height="12" rx="1"/><rect x="16" y="9" width="6" height="10" rx="1"/>'),
+  bars: s('<path d="M9 5v18M6 9h3M9 19h3M19 7v15M16 18h3M19 10h3"/>'),
+  line: s('<path d="M4 20l6-7 5 4 9-10"/>'),
+  area: s('<path d="M4 20l6-7 5 4 9-10v16H4z" fill="currentColor" fill-opacity=".2"/><path d="M4 20l6-7 5 4 9-10"/>'),
+  ha: s('<path d="M9 4v4M9 20v4M19 6v3M19 19v3"/><rect x="6" y="8" width="6" height="12" rx="3" fill="currentColor"/><rect x="16" y="9" width="6" height="10" rx="3"/>'),
+  more: s('<circle cx="7" cy="14" r="1.6" fill="currentColor"/><circle cx="14" cy="14" r="1.6" fill="currentColor"/><circle cx="21" cy="14" r="1.6" fill="currentColor"/>'),
+  pencil: s('<path d="M6 22l1-5L18 6l4 4L11 21z"/><path d="M16 8l4 4"/>'),
+  undo: s('<path d="M10 9L6 13l4 4"/><path d="M6 13h11a5 5 0 0 1 0 10h-3"/>'),
+  reset: s('<path d="M7 9a8 8 0 1 1-1 7"/><path d="M7 4v5h5"/>'),
+  dot: s('<circle cx="14" cy="14" r="4" fill="currentColor" stroke="none"/>'),
+  copy: s('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M6 18V7a1 1 0 0 1 1-1h11"/>'),
+};
+export const TOOL_ICON = { cursor: 'cursor', trend: 'trend', ray: 'ray', hline: 'hline', hray: 'hray', vline: 'vline', rect: 'rect', fib: 'fib', measure: 'measure', text: 'text', long: 'long', short: 'short' };
+export const CHART_TYPES = [['candles', 'Kerzen'], ['hollow', 'Hohle Kerzen'], ['bars', 'Balken'], ['line', 'Linie'], ['area', 'Fläche'], ['ha', 'Heikin Ashi']];
+const COIN_COLORS = { BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', XRP: '#23292f', BNB: '#f3ba2f', DOGE: '#c2a633', HYPE: '#50e3c2', SUI: '#4da2ff', LINK: '#2a5ada', AVAX: '#e84142', ADA: '#0033ad', TRX: '#ff060a', TON: '#0098ea', LTC: '#345d9d', PEPE: '#3d8b37', ETC: '#328332' };
+export function coinBadge(base, size = 22) {
+  const c = COIN_COLORS[base] || '#787b86';
+  const t = base.length > 3 ? base.slice(0, 3) : base;
+  return `<span class="coin" style="--c:${c};width:${size}px;height:${size}px;font-size:${Math.round(size * (t.length > 2 ? 0.34 : 0.42))}px">${t}</span>`;
+}

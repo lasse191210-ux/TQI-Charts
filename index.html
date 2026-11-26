@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>TQI Charts</title>
+<meta name="description" content="TQI Charts – Krypto-Charts mit TradingView-Charts, Orderflow und eigenen Indikatoren (RVWAP, VWAP-Bänder, High Volume Bars, Market-Profile-Level).">
+<meta name="theme-color" content="#141413">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TQI Charts">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+<script>
+  // Design sofort setzen (kein Aufblitzen)
+  try { var s = JSON.parse(localStorage.getItem('tqi-charts:v1') || '{}'); if (s.theme) document.documentElement.dataset.theme = s.theme; } catch (e) {}
+</script>
+</head>
+<body>
+<div id="app" class="app">
+  <header class="topbar" id="topbar">
+    <a class="brand" href="./" title="TQI Charts"><span id="brandLogo"></span><span class="brand-t">TQI <b>Charts</b></span></a>
+    <button class="tb sym" id="symBtn" title="Symbol suchen"></button>
+    <span class="sep"></span>
+    <div class="tfs" id="tfs"></div>
+    <button class="tb icon narrow" id="tfMore" title="Alle Zeiteinheiten" data-pop></button>
+    <span class="sep"></span>
+    <button class="tb icon" id="typeBtn" title="Charttyp" data-pop></button>
+    <span class="sep"></span>
+    <button class="tb lbl" id="indBtn" title="Indikatoren (/)"></button>
+    <button class="tb lbl" id="tplBtn" title="Vorlagen" data-pop></button>
+    <div class="grow"></div>
+    <span class="status off" id="status"><i></i><span>offline</span></span>
+    <button class="tb icon" id="themeBtn"></button>
+    <button class="tb icon" id="setBtn" title="Einstellungen"></button>
+    <button class="tb icon" id="shotBtn" title="Screenshot speichern"></button>
+    <button class="tb icon" id="fullBtn" title="Vollbild"></button>
+  </header>
+  <div class="mhead" id="mhead"></div>
+  <div class="body">
+    <aside class="tools" id="tools" aria-label="Zeichenwerkzeuge"></aside>
+    <main class="chartwrap" id="chartwrap">
+      <div id="chart" class="chart"></div>
+      <div id="drawLayer" class="drawlayer"></div>
+      <div id="legend" class="legend"></div>
+      <div id="ztable" class="ztable"></div>
+      <div id="paneLegends" class="panelegends"></div>
+      <div id="selbar" class="selbar"></div>
+      <div id="loading" class="loading"><div class="spin"></div><span></span></div>
+      <div id="histLoad" class="histload">lade ältere Kerzen …</div>
+    </main>
+    <aside class="right" id="right">
+      <div class="rhead" id="rhead"></div>
+      <div class="rbody" id="rbody"></div>
+    </aside>
+    <nav class="widgets" id="widgets" aria-label="Panels"></nav>
+  </div>
+  <footer class="bottombar" id="bottombar"></footer>
+  <nav class="mbar" id="mbar"></nav>
+</div>
+<div id="modal" class="modal-root"></div>
+<div id="pop" class="pop-root"></div>
+<div id="toasts" class="toasts"></div>
+<noscript><p style="padding:20px">TQI Charts braucht JavaScript.</p></noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
