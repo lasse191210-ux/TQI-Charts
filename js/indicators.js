@@ -1,6 +1,6 @@
 // Alle Indikatoren: Einstellungen, Rechnung und Zeichnung.
 // Hauptchart-Indikatoren zeichnen in die Scene (overlay.js), Panel-Indikatoren liefern Plots für eigene Panels.
-import { DAY, MIN, periodStart, periodPrev, nf, fmtDayLabel, minutesToTf, rgba, mixHex, tfMs, niceStep, lowerBound, splitColor, weekStart, INK, INK2, POC } from './util.js';
+import { DAY, MIN, periodStart, periodPrev, nf, fmtDayLabel, minutesToTf, rgba, mixHex, tfMs, niceStep, lowerBound, splitColor, weekStart, floorTf, INK, INK2, POC } from './util.js';
 import { MARKETS } from './exchanges.js';
 import { sessionProfiles } from './calc/vprofile.js';
 import { buildTpoSessions } from './render/tpo.js';
@@ -1092,10 +1092,11 @@ function fmtShort(x) {
 const bigtrades = {
   type: 'bigtrades', name: 'Big Trades', cat: 'of', pane: 'main',
   desc: 'Große Marktorders als Blasen (wie ATAS Big Trades): Trades mit gleicher Zeit und Seite = eine Order. Live und rückwärts nachgeladen, im Browser gespeichert.',
-  defaults: { minUsd: 0, hours: 4, scale: 1, text: true, unit: 'usd', buy: INK2, sell: INK, opacity: 0.55, border: true, maxBubbles: 1500 },
+  defaults: { minUsd: 0, group: 'bar', hours: 4, scale: 1, text: true, unit: 'usd', buy: INK2, sell: INK, opacity: 0.55, border: true, maxBubbles: 1500 },
   schema: [
     { sec: 'Filter' },
     { k: 'minUsd', label: 'Mindestgröße in USD (0 = automatisch)', t: 'int', min: 0, max: 1e9 },
+    { k: 'group', label: 'Anzeige', t: 'select', opts: [['bar', 'je Kerze zusammengefasst (übersichtlich)'], ['none', 'jede Order einzeln (wie ATAS)']] },
     { k: 'hours', label: 'Historie nachladen (Stunden)', t: 'int', min: 0, max: 24 },
     { k: 'maxBubbles', label: 'Max. Blasen', t: 'int', min: 10, max: 10000 },
     { sec: 'Stil', tab: 'style' },
@@ -1111,11 +1112,24 @@ const bigtrades = {
   needs() { return []; },
   compute(s, c) {
     const thr = s.minUsd > 0 ? s.minUsd : c.autoBig();
-    return { list: c.bigTrades(thr).slice(-s.maxBubbles), thr, note: c.btInfo() };
+    let list = c.bigTrades(thr);
+    if (s.group !== 'none') {
+      // je Kerze und Seite eine Blase: Summe der großen Orders, Preis = mittlerer Preis (nach Menge)
+      const map = new Map();
+      for (const x of list) {
+        const bt = floorTf(x.t, c.tf), k = bt + (x.buy ? 'b' : 's');
+        const g = map.get(k);
+        if (g) { g.usd += x.usd; g.q += x.q; g.pq += x.p * x.q; g.n++; }
+        else map.set(k, { t: bt, buy: x.buy, usd: x.usd, q: x.q, pq: x.p * x.q, n: 1 });
+      }
+      list = [...map.values()].map(g => ({ t: g.t, buy: g.buy, usd: g.usd, q: g.q, p: g.pq / g.q, n: g.n })).sort((a, b) => a.t - b.t);
+    }
+    return { list: list.slice(-s.maxBubbles), thr, note: c.btInfo() };
   },
   draw(s, d, sc) {
     for (const x of d.list) {
-      const r = Math.max(3, Math.min(36, 4.2 * Math.sqrt(x.usd / d.thr) * s.scale));
+      // je Kerze zusammengefasst: logarithmisch (große Summen bleiben kompakt), einzeln: Wurzel wie ATAS
+      const r = s.group !== 'none' ? Math.max(3, Math.min(28, (3 + 3.2 * Math.log2(1 + x.usd / d.thr)) * s.scale)) : Math.max(3, Math.min(36, 4.2 * Math.sqrt(x.usd / d.thr) * s.scale));
       const col = x.buy ? s.buy : s.sell;
       sc.bubble({ t: x.t, p: x.p, r, fill: rgba(col, s.opacity), stroke: s.border ? rgba(col, 0.95) : null, text: s.text ? fmtShort(s.unit === 'usd' ? x.usd : x.q) : null, tc: '#ffffff' });
     }
