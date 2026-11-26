@@ -24,6 +24,7 @@ export const ICON = {
   gear: s('<circle cx="14" cy="14" r="3.5"/><path d="M14 4v3M14 21v3M4 14h3M21 14h3M6.9 6.9l2.1 2.1M19 19l2.1 2.1M6.9 21.1L9 19M19 9l2.1-2.1"/>'),
   camera: s('<path d="M5 9h4l2-3h6l2 3h4v13H5z"/><circle cx="14" cy="15" r="4"/>'),
   full: s('<path d="M6 11V6h5M17 6h5v5M22 17v5h-5M11 22H6v-5"/>'),
+  fullExit: s('<path d="M11 6v5H6M22 11h-5V6M17 22v-5h5M6 17h5v5"/>'),
   sun: s('<circle cx="14" cy="14" r="4.5"/><path d="M14 3v2.5M14 22.5V25M3 14h2.5M22.5 14H25M6.2 6.2l1.8 1.8M20 20l1.8 1.8M6.2 21.8L8 20M20 8l1.8-1.8"/>'),
   moon: s('<path d="M21.5 17.5A8.5 8.5 0 0 1 10.5 6.5a8.5 8.5 0 1 0 11 11z"/>'),
   search: s('<circle cx="12.5" cy="12.5" r="6.5"/><path d="M17.5 17.5L23 23"/>'),
@@ -49,8 +50,11 @@ export const ICON = {
   reset: s('<path d="M7 9a8 8 0 1 1-1 7"/><path d="M7 4v5h5"/>'),
   dot: s('<circle cx="14" cy="14" r="4" fill="currentColor" stroke="none"/>'),
   copy: s('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M6 18V7a1 1 0 0 1 1-1h11"/>'),
+  fvp: s('<path d="M5 4v20M23 4v20" stroke-width="1.1"/><path d="M5 8h7M5 11h11M5 14h15M5 17h9M5 20h5" stroke-width="2.2"/>'),
+  footprint: s('<rect x="4" y="4" width="9" height="20" rx="1"/><rect x="15" y="7" width="9" height="15" rx="1"/><path d="M6.5 8.5h4M6.5 12h4M6.5 15.5h4M6.5 19h4M17.5 11h4M17.5 14.5h4M17.5 18h4" stroke-width="1.3"/>'),
+  heatmap: s('<rect x="4" y="4" width="20" height="20" rx="2" stroke-width="1.2"/><path d="M4 9h20M4 14h20M4 19h20" stroke-width="1"/><rect x="9" y="9" width="10" height="5" fill="currentColor" fill-opacity=".85" stroke="none"/><rect x="5" y="14" width="18" height="5" fill="currentColor" fill-opacity=".35" stroke="none"/><rect x="14" y="19" width="9" height="4" fill="currentColor" fill-opacity=".6" stroke="none"/>'),
 };
-export const TOOL_ICON = { cursor: 'cursor', trend: 'trend', ray: 'ray', hline: 'hline', hray: 'hray', vline: 'vline', rect: 'rect', fib: 'fib', measure: 'measure', text: 'text', long: 'long', short: 'short' };
+export const TOOL_ICON = { cursor: 'cursor', trend: 'trend', ray: 'ray', hline: 'hline', hray: 'hray', vline: 'vline', rect: 'rect', fib: 'fib', measure: 'measure', text: 'text', long: 'long', short: 'short', fvp: 'fvp' };
 export const CHART_TYPES = [['tpo', 'TPO (Market Profile)'], ['candles', 'Kerzen'], ['hollow', 'Hohle Kerzen'], ['bars', 'Balken'], ['line', 'Linie'], ['area', 'Fläche'], ['ha', 'Heikin Ashi']];
 const COIN_COLORS = { BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', XRP: '#23292f', BNB: '#f3ba2f', DOGE: '#c2a633', HYPE: '#50e3c2', SUI: '#4da2ff', LINK: '#2a5ada', AVAX: '#e84142', ADA: '#0033ad', TRX: '#ff060a', TON: '#0098ea', LTC: '#345d9d', PEPE: '#3d8b37', ETC: '#328332' };
 export function coinBadge(base, size = 22) {

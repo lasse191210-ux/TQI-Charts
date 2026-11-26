@@ -282,8 +282,19 @@ export function rgba(hex, a = 1) {
   let h = hex.replace('#', '');
   if (h.length === 3) h = h.split('').map(c => c + c).join('');
   const n = parseInt(h.slice(0, 6), 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  // #rrggbbaa: eingebaute Deckkraft (aus dem Farbwähler) mit a multiplizieren
+  const al = h.length === 8 ? a * (parseInt(h.slice(6, 8), 16) / 255) : a;
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, +al.toFixed(3)))})`;
 }
+/** Farbe für Stellen, die kein #rrggbbaa verstehen (Chart-Bibliothek). */
+export function cssColor(c) { return typeof c === 'string' && /^#[0-9a-f]{8}$/i.test(c) ? rgba(c) : c; }
+/** '#rrggbb[aa]' → { hex: '#rrggbb', a: 0…1 } */
+export function splitColor(c) {
+  const m = /^#?([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(c || '');
+  if (!m) return { hex: '#888888', a: 1 };
+  return { hex: '#' + m[1].toLowerCase(), a: m[2] ? parseInt(m[2], 16) / 255 : 1 };
+}
+export function joinColor(hex, a) { return a >= 0.995 ? hex : hex + Math.round(Math.max(0, a) * 255).toString(16).padStart(2, '0'); }
 
 /** Deckende Mischung: Farbe a mit Deckkraft über Hintergrund bg. */
 export function mixHex(a, bg, alpha) {

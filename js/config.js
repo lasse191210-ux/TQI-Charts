@@ -15,35 +15,35 @@ export const COIN_NAME = Object.fromEntries(COINS);
 export const TEMPLATES = {
   bild: {
     name: 'Wie mein TradingView (Standard)',
-    desc: 'VWAP Tag mit Bändern 1–4, RVWAP 365/90/7 mit Z-Tabelle, High Volume Bars (ausgeblendet)',
+    desc: 'VWAP Tag mit Bändern 1–4, RVWAP 365/90/7 mit Z-Tabelle, HVB (ausgeblendet), TPO im Chart, Key Levels, Big Trades',
     list: [
       { type: 'rvwap' },
       { type: 'hvb', visible: false },
       { type: 'vwap', s: { period: 'day' } },
+      { type: 'tpo' },
+      { type: 'keylevels' },
+      { type: 'bigtrades' },
     ],
   },
   orderflow: {
     name: 'Orderflow',
-    desc: 'Wie Standard, dazu Volumen nach Delta, CVD, Open Interest, große Trades, Liquidationen',
+    desc: 'Wie Standard, dazu Liquidationen, Volumen nach Delta, CVD, Open Interest',
     list: [
-      { type: 'rvwap' }, { type: 'hvb' }, { type: 'vwap', s: { period: 'day' } },
+      { type: 'rvwap' }, { type: 'vwap', s: { period: 'day' } }, { type: 'tpo' }, { type: 'keylevels' },
       { type: 'bigtrades' }, { type: 'liq' },
       { type: 'volume' }, { type: 'cvd' }, { type: 'oi' },
     ],
   },
   keylevels: {
-    name: 'Key Levels (wie ATAS)',
-    desc: 'Alles aus deinem ATAS-Indikator: Value Areas, Composites, Naked POC/UFA, Singles, Tails, SFP, Inst. Level, RVWAP, VWAP Woche, HVB',
-    list: [
-      { type: 'va' }, { type: 'naked' }, { type: 'inst' }, { type: 'sfp' },
-      { type: 'rvwap', s: { w3: true } }, { type: 'vwap', s: { period: 'week' } }, { type: 'hvb' },
-    ],
+    name: 'Nur TPO + Key Levels',
+    desc: 'Kerzen mit TPO und Key Levels (nPOC, Tails, Singles, VAH/VAL/POC Vortag, Woche, Quartal, Jahr, 52W-Tief)',
+    list: [{ type: 'tpo' }, { type: 'keylevels' }],
   },
   alles: {
     name: 'Alles',
     desc: 'Alle eigenen Indikatoren und Orderflow-Panels',
     list: [
-      { type: 'va', s: { comp1: false, comp2: false } }, { type: 'naked' }, { type: 'inst' }, { type: 'sfp' },
+      { type: 'tpo' }, { type: 'keylevels' }, { type: 'vp' }, { type: 'inst' }, { type: 'sfp' },
       { type: 'rvwap' }, { type: 'vwap' }, { type: 'hvb' }, { type: 'htfvwap' }, { type: 'volcandles' },
       { type: 'bigtrades' }, { type: 'liq' }, { type: 'volume' }, { type: 'cvd' }, { type: 'oi' }, { type: 'funding' },
     ],
@@ -63,6 +63,7 @@ export const DEFAULT_STATE = {
   tpoRow: 0, log: false, pct: false, autoScale: true,
   magnet: false, drawLock: false, drawHide: false,
   tapeMin: 0, domStep: 0, legendOpen: true,
+  myDefaults: {}, recentColors: [], countdown: true, symLabel: true,
 };
 
 export const THEMES = {

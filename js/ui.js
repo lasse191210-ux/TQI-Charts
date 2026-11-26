@@ -5,7 +5,7 @@ import { TOOLS, COLORS } from './render/drawings.js';
 import { TYPES, REGISTRY, CATEGORIES } from './indicators.js';
 import { MARKETS } from './exchanges.js';
 import { APP, COINS, COIN_NAME, TEMPLATES, CANDLE_STYLES } from './config.js';
-import { TIMEFRAMES, fmtPrice, fmtPct, fmtCompact, fmtTime, tzOffsetLabel, escapeHtml as esc, nf, deepClone, mergeDefaults, niceStep, periodStart } from './util.js';
+import { TIMEFRAMES, fmtPrice, fmtPct, fmtCompact, fmtTime, tzOffsetLabel, escapeHtml as esc, nf, deepClone, mergeDefaults, niceStep, periodStart, cssColor, splitColor, joinColor, mixHex } from './util.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -44,7 +44,9 @@ export class UI {
     $('#setBtn').onclick = () => this.openSettings();
     $('#shotBtn').onclick = () => a.screenshot();
     $('#fullBtn').onclick = () => this.toggleFullscreen();
-    if (!document.fullscreenEnabled) $('#fullBtn').style.display = 'none';
+    $('#fsExit').innerHTML = ICON.fullExit;
+    $('#fsExit').onclick = () => this.toggleFullscreen(false);
+    document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && this.full && !this.mobile) this.toggleFullscreen(false); });
     this.mq.addEventListener('change', () => { this.renderAll(); setTimeout(() => this.placePaneLegends(), 50); });
     // Legende: Aktionen per Delegation
     $('#legend').addEventListener('click', (e) => this.onLegendClick(e));
@@ -73,9 +75,9 @@ export class UI {
     $('#symBtn').innerHTML = `${coinBadge(st.base, 20)}<span class="sym-t">${esc(m.ticker(st.base))}</span><span class="sym-x">${m.badge}</span>`;
     $('#tfs').innerHTML = st.favTfs.map(tf => `<button class="tb tf ${tf === st.tf ? 'on' : ''}" data-tf="${tf}">${TF_SHORT[tf]}</button>`).join('') + (st.favTfs.includes(st.tf) ? '' : `<button class="tb tf on" data-tf="${st.tf}">${TF_SHORT[st.tf]}</button>`);
     $$('#tfs [data-tf]').forEach(b => b.onclick = () => a.setTf(b.dataset.tf));
-    $('#typeBtn').innerHTML = ICON[st.chartType === 'tpo' ? (st.lastType || 'candles') : st.chartType] || ICON.candles;
+    $('#typeBtn').innerHTML = ICON[st.chartType === 'tpo' ? (st.lastType && st.lastType !== 'tpo' ? st.lastType : 'candles') : st.chartType] || ICON.candles;
     $('#tpoBtn').innerHTML = `${ICON.tpo}<span>TPO</span>`;
-    $('#tpoBtn').classList.toggle('on', st.chartType === 'tpo');
+    $('#tpoBtn').classList.toggle('on', a.tpoOverlayOn);
     $('#typeBtn').title = 'Charttyp: ' + (CHART_TYPES.find(x => x[0] === st.chartType)?.[1] || '');
     $('#themeBtn').innerHTML = st.theme === 'dark' ? ICON.sun : ICON.moon;
     $('#themeBtn').title = st.theme === 'dark' ? 'Helles Design (wie TradingView-Bild)' : 'Dunkles Design';
@@ -96,15 +98,24 @@ export class UI {
     $('#toasts').appendChild(t);
     setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, ms);
   }
-  toggleFullscreen() {
-    if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.();
+  /** Vollbild-Chart: nur der Chart (Handy: ohne Kopf und Leiste unten; PC: ohne Seitenleisten) + Browser-Vollbild, wo möglich. */
+  toggleFullscreen(on = !this.full) {
+    this.full = on;
+    document.body.classList.toggle('fullchart', on);
+    try {
+      if (on && document.fullscreenEnabled && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+      if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    } catch { /* iPhone: kein Browser-Vollbild, CSS reicht */ }
+    $('#fullBtn').innerHTML = on ? ICON.fullExit : ICON.full;
+    const mf = $('#mhFull'); if (mf) mf.innerHTML = on ? ICON.fullExit : ICON.full;
+    setTimeout(() => { this.placePaneLegends(); this.app.overlay.requestUpdate?.(); }, 60);
   }
 
   // ================================================================ Zeichenleiste links
   renderTools() {
     const a = this.app, st = a.state;
     const tool = a.drawings?.tool || 'cursor';
-    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['rect', 'fib', 'measure', 'text'], ['long', 'short']];
+    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['rect', 'fib', 'measure', 'fvp', 'text'], ['long', 'short']];
     let html = groups.map(g => g.map(t => `<button class="tool ${t === tool ? 'on' : ''}" data-tool="${t}" title="${TOOLS.find(x => x[0] === t)[1]}">${ICON[TOOL_ICON[t]]}</button>`).join('')).join('<div class="tsep"></div>');
     html += '<div class="tsep"></div>';
     html += `<button class="tool ${st.magnet ? 'on' : ''}" data-tt="magnet" title="Magnet (an Kerzen einrasten)">${ICON.magnet}</button>`;
@@ -194,6 +205,7 @@ export class UI {
     const bars = a.bars;
     if (!bars.length) { $('#lgOhlc') && ($('#lgOhlc').innerHTML = ''); return; }
     const i = a.crossIdx ?? bars.length - 1;
+    $('#legend')?.classList.toggle('xhair', a.crossIdx != null);
     const b = bars[i], p = bars[i - 1];
     const ch = p ? b.c - p.c : b.c - b.o, chp = p ? ch / p.c * 100 : 0;
     const cls = b.c >= b.o ? 'up' : 'dn';
@@ -321,10 +333,14 @@ export class UI {
       sp.textContent = Number.isFinite(chg) ? `${chgAbs >= 0 ? '+' : '−'}${a.fmt(Math.abs(chgAbs))} (${fmtPct(chg)})` : '';
     } else if (mh) {
       mh.dataset.key = key;
-      mh.innerHTML = `<button class="mh-sym" id="mhSym">${coinBadge(st.base, 26)}<span><b>${esc(COIN_NAME[st.base] || st.base)}</b><small>${esc(m.ticker(st.base))} · ${m.label}</small></span>${ICON.chev}</button>
-        <div class="mh-px"><b>${px}</b><span class="${chg >= 0 ? 'up' : 'dn'}">${Number.isFinite(chg) ? `${chgAbs >= 0 ? '+' : '−'}${a.fmt(Math.abs(chgAbs))} (${fmtPct(chg)})` : ''}</span></div>
-        <span class="status" id="mstatus"><i></i><span></span></span>`;
+      const nm = `${COIN_NAME[st.base] || st.base} / ${m.quote === 'USD' ? 'Dollar' : 'TetherUS'}${m.type === 'Perp' ? ' Perp' : ''}`;
+      mh.innerHTML = `<div class="mh-title">
+          <button class="mh-sym" id="mhSym">${coinBadge(st.base, 24)}<b>${esc(nm)}</b><span class="status" id="mstatus"><i></i><span></span></span></button>
+          <div class="mh-px"><b>${px}</b><span class="${chg >= 0 ? 'up' : 'dn'}">${Number.isFinite(chg) ? `${chgAbs >= 0 ? '+' : '−'}${a.fmt(Math.abs(chgAbs))} (${fmtPct(chg)})` : ''}</span></div>
+        </div>
+        <button class="mh-full" id="mhFull" title="Vollbild-Chart">${this.full ? ICON.fullExit : ICON.full}</button>`;
       $('#mhSym').onclick = () => this.openSymbolDialog();
+      $('#mhFull').onclick = () => this.toggleFullscreen();
       this.setStatus(a.hub.status);
     }
     const wr = $(`.wl-row[data-base="${st.base}"] .wl-px`);
@@ -482,11 +498,13 @@ export class UI {
   renderMobile() {
     const a = this.app, st = a.state;
     $('#mbar').innerHTML = `
-      <button class="mb-pill" id="mbSym">${coinBadge(st.base, 22)}<b>${esc(a.market.ticker(st.base))}</b><span>${TF_SHORT[st.tf]}</span></button>
-      <button class="mb-btn mb-tpo ${st.chartType === 'tpo' ? 'on' : ''}" id="mbTpo" title="TPO / Market Profile">TPO</button>
-      <button class="mb-btn ${$('#tools').classList.contains('mopen') ? 'on' : ''}" id="mbDraw" title="Zeichnen">${ICON.pencil}</button>
-      <button class="mb-btn" id="mbInd" title="Indikatoren">${ICON.fx}</button>
-      <button class="mb-btn" id="mbMore" title="Mehr">${ICON.more}</button>`;
+      <button class="mb-pill" id="mbSym">${coinBadge(st.base, 26)}<b>${esc(a.market.ticker(st.base).replace('.P', ''))}</b><span>${TF_SHORT[st.tf]}</span></button>
+      <div class="mb-group">
+        <button class="mb-btn mb-tpo ${a.tpoOverlayOn ? 'on' : ''}" id="mbTpo" title="TPO / Market Profile">TPO</button>
+        <button class="mb-btn ${$('#tools').classList.contains('mopen') ? 'on' : ''}" id="mbDraw" title="Zeichnen">${ICON.pencil}</button>
+        <button class="mb-btn" id="mbInd" title="Indikatoren">${ICON.fx}</button>
+        <button class="mb-btn" id="mbMore" title="Mehr">${ICON.more}</button>
+      </div>`;
     $('#mbSym').onclick = () => this.openMobileSymTf();
     $('#mbDraw').onclick = () => { $('#tools').classList.toggle('mopen'); this.renderMobile(); };
     $('#mbTpo').onclick = () => this.app.toggleTpo();
@@ -691,28 +709,139 @@ export class UI {
     if (!this.mobile) setTimeout(() => $('#indQ', body).focus(), 30);
   }
 
+  /** Einstellungen wie TradingView: Reiter Eingaben / Stil / Sichtbarkeit, Standardwerte-Menü, Abbrechen / Ok. */
   openIndicatorSettings(uid) {
     const a = this.app;
     const ind = a.state.indicators.find(x => x.uid === uid);
     if (!ind) return;
     const T = TYPES[ind.type];
-    const orig = deepClone(ind.s);
+    const orig = deepClone(ind.s), origVis = deepClone(ind.vis || null);
     let cur = deepClone(ind.s);
-    const body = el(`<div class="setdlg"><div class="form" id="frm"></div>
-      <div class="dlg-foot"><button class="tb" id="fReset">Standard</button><div class="grow"></div><button class="tb" id="fCancel">Abbrechen</button><button class="tb primary" id="fOk">OK</button></div></div>`);
-    const close = this.modal(T.name, body, { wide: false, onClose: () => {} });
-    const renderForm = () => { $('#frm', body).innerHTML = formHtml(T.schema, cur); };
-    renderForm();
-    const apply = () => { a.updateIndicator(uid, deepClone(cur)); this.renderLegend(); };
+    const vis = Object.assign({ min: true, hour: true, day: true, week: true }, ind.vis || {});
+    const tabs = splitSchema(T.schema);
+    const order = [['inputs', 'Eingaben'], ['style', 'Stil'], ['vis', 'Sichtbarkeit']].filter(([k]) => k === 'vis' || tabs[k].length);
+    let tab = order[0][0];
+    const body = el(`<div class="setdlg tvdlg">
+      <div class="tv-tabs">${order.map(([k, l]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="form" id="frm"></div>
+      <div class="dlg-foot"><div class="dd-wrap"><button class="tb" id="fDef">Standardwerte ${ICON.chev}</button></div><div class="grow"></div><button class="tb" id="fCancel">Abbrechen</button><button class="tb primary" id="fOk">Ok</button></div></div>`);
+    const close = this.modal(T.name, body);
+    const render = () => {
+      $$('.tv-tabs button', body).forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+      if (tab === 'vis') {
+        $('#frm', body).innerHTML = `<div class="f-sec">Anzeigen auf Zeiteinheiten</div>` + [['min', 'Minuten', '1 – 30 Min.'], ['hour', 'Stunden', '1 – 12 Std.'], ['day', 'Tage', '1 T'], ['week', 'Wochen und Monate', '1 W, 1 M']]
+          .map(([k, l, r]) => `<div class="f-row f-chk"><label class="chk"><input type="checkbox" data-vis="${k}" ${vis[k] ? 'checked' : ''}><i></i><span>${l}</span></label><span class="f-ctl muted">${r}</span></div>`).join('');
+      } else $('#frm', body).innerHTML = groupsHtml(tabs[tab], cur);
+    };
+    render();
+    const apply = () => {
+      ind.vis = Object.values(vis).every(Boolean) ? undefined : { ...vis };
+      a.updateIndicator(uid, deepClone(cur));
+      this.renderLegend();
+    };
     let tmr;
-    $('#frm', body).addEventListener('input', (e) => {
-      readField(e.target, cur);
-      clearTimeout(tmr); tmr = setTimeout(apply, 250);
-    });
-    $('#frm', body).addEventListener('change', (e) => { readField(e.target, cur); if (e.target.dataset.auto != null) renderForm(); clearTimeout(tmr); apply(); });
-    $('#fReset', body).onclick = () => { cur = deepClone(T.defaults); renderForm(); apply(); };
-    $('#fCancel', body).onclick = () => { a.updateIndicator(uid, orig); this.renderLegend(); close(); };
+    const later = () => { clearTimeout(tmr); tmr = setTimeout(apply, 200); };
+    $('.tv-tabs', body).onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; render(); } };
+    $('#frm', body).addEventListener('change', (e) => { const v = e.target.dataset.vis; if (v) { vis[v] = e.target.checked; apply(); } });
+    this.bindForm($('#frm', body), cur, (immediate) => immediate ? (clearTimeout(tmr), apply()) : later(), render);
+    $('#fDef', body).onclick = (e) => {
+      e.stopPropagation();
+      const mine = a.state.myDefaults?.[ind.type];
+      const menu = el(`<div class="dd-menu">
+        <button data-d="factory">Auf Werkseinstellungen zurücksetzen</button>
+        ${mine ? '<button data-d="mine">Meine Standardwerte laden</button>' : ''}
+        <button data-d="save">Als meine Standardwerte speichern</button>
+        ${mine ? '<button data-d="forget">Meine Standardwerte löschen</button>' : ''}</div>`);
+      const wrap = $('.dd-wrap', body);
+      $('.dd-menu', wrap)?.remove();
+      wrap.appendChild(menu);
+      const off = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', off, true); } };
+      setTimeout(() => document.addEventListener('pointerdown', off, true));
+      menu.onclick = (ev) => {
+        const d = ev.target.closest('[data-d]')?.dataset.d;
+        if (!d) return;
+        if (d === 'factory') { cur = deepClone(T.defaults); }
+        if (d === 'mine') { cur = mergeDefaults(T.defaults, mine); }
+        if (d === 'save') { (a.state.myDefaults ||= {})[ind.type] = deepClone(cur); a._save(); this.toast('Als Standard für neue „' + T.name + '“ gespeichert', 'info', 2500); }
+        if (d === 'forget') { delete a.state.myDefaults[ind.type]; a._save(); }
+        menu.remove();
+        this.bindForm($('#frm', body), cur, (immediate) => immediate ? (clearTimeout(tmr), apply()) : later(), render);
+        render(); apply();
+      };
+    };
+    $('#fCancel', body).onclick = () => { ind.vis = origVis || undefined; a.updateIndicator(uid, orig); this.renderLegend(); close(); };
     $('#fOk', body).onclick = () => { clearTimeout(tmr); apply(); close(); };
+  }
+
+  /**
+   * Formular-Ereignisse: Eingaben, Farbwähler (Palette + Deckkraft), Linienbreite.
+   * onChange(immediate) wird nach jeder Änderung gerufen. Bindet sich je Container nur einmal (Daten über Getter).
+   */
+  bindForm(box, cur, onChange, rerender) {
+    box._fs = { cur, onChange, rerender };
+    if (box._bound) return;
+    box._bound = true;
+    const st = () => box._fs;
+    box.addEventListener('input', (e) => { if (e.target.dataset.k && e.target.dataset.t !== 'bool') { readField(e.target, st().cur); st().onChange(false); } });
+    box.addEventListener('change', (e) => {
+      if (!e.target.dataset.k) return;
+      readField(e.target, st().cur);
+      if (e.target.dataset.auto != null) st().rerender?.();
+      st().onChange(true);
+    });
+    box.addEventListener('click', (e) => {
+      const sw = e.target.closest('.cswatch');
+      if (sw) {
+        e.preventDefault();
+        const k = sw.dataset.sw;
+        this.openColorPicker(sw, st().cur[k], (c) => { st().cur[k] = c; sw.style.setProperty('--c', cssColor(c)); sw.classList.remove('auto'); st().onChange(true); });
+        return;
+      }
+      const wb = e.target.closest('.wpick [data-w]');
+      if (wb) {
+        e.preventDefault();
+        const k = wb.parentElement.dataset.wk;
+        st().cur[k] = +wb.dataset.w;
+        $$('[data-w]', wb.parentElement).forEach(x => x.classList.toggle('on', x === wb));
+        st().onChange(true);
+      }
+    });
+  }
+
+  /** Farbwähler wie TradingView: Palette, zuletzt benutzt, eigene Farbe (+), Deckkraft. */
+  openColorPicker(anchor, value, onPick) {
+    $('.cpick')?.remove();
+    const a = this.app;
+    let { hex, a: op } = splitColor(value === 'auto' ? '#787b86' : value);
+    const recent = (a.state.recentColors || []).slice(0, 10);
+    const pop = el(`<div class="cpick" role="dialog" aria-label="Farbe">
+      <div class="cp-grid">${TV_PALETTE.map(row => row.map(c => `<button data-c="${c}" style="--c:${c}" class="${c === hex ? 'on' : ''}" title="${c}"></button>`).join('')).join('')}</div>
+      ${recent.length ? `<div class="cp-recent">${recent.map(c => `<button data-c="${c}" style="--c:${c}"></button>`).join('')}</div>` : ''}
+      <div class="cp-row"><label class="cp-add" title="Eigene Farbe">+<input type="color" value="${hex}"></label><span class="cp-cur" style="--c:${cssColor(joinColor(hex, op))}"></span></div>
+      <div class="cp-op"><span>Deckkraft</span><input type="range" min="0" max="100" step="1" value="${Math.round(op * 100)}"><b>${Math.round(op * 100)} %</b></div>
+    </div>`);
+    document.body.appendChild(pop);
+    // Lage: am Feld (PC) bzw. unten mittig (Handy)
+    if (!this.mobile) {
+      const r = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+      let x = Math.min(window.innerWidth - w - 8, Math.max(8, r.right - w)), y = r.bottom + 6;
+      if (y + h > window.innerHeight - 8) y = Math.max(8, r.top - h - 6);
+      pop.style.left = x + 'px'; pop.style.top = y + 'px';
+    } else pop.classList.add('sheet');
+    const emit = (remember) => {
+      const c = joinColor(hex, op);
+      $('.cp-cur', pop).style.setProperty('--c', cssColor(c));
+      $$('.cp-grid [data-c]', pop).forEach(b => b.classList.toggle('on', b.dataset.c === hex));
+      onPick(c);
+      if (remember) { a.state.recentColors = [hex, ...(a.state.recentColors || []).filter(x => x !== hex)].slice(0, 10); a._save(); }
+    };
+    pop.addEventListener('click', (e) => { const b = e.target.closest('[data-c]'); if (b) { hex = b.dataset.c; emit(true); } });
+    $('.cp-add input', pop).addEventListener('input', (e) => { hex = e.target.value; emit(false); });
+    $('.cp-add input', pop).addEventListener('change', (e) => { hex = e.target.value; emit(true); });
+    $('.cp-op input', pop).addEventListener('input', (e) => { op = +e.target.value / 100; $('.cp-op b', pop).textContent = e.target.value + ' %'; emit(false); });
+    const off = (ev) => { if (!pop.contains(ev.target) && ev.target !== anchor) { pop.remove(); document.removeEventListener('pointerdown', off, true); document.removeEventListener('keydown', esc2, true); } };
+    const esc2 = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); pop.remove(); document.removeEventListener('pointerdown', off, true); document.removeEventListener('keydown', esc2, true); } };
+    setTimeout(() => { document.addEventListener('pointerdown', off, true); document.addEventListener('keydown', esc2, true); });
   }
 
   openTpoSettings() {
@@ -741,7 +870,7 @@ export class UI {
     const body = el(`<div class="setdlg"><div class="form">${formHtml(schema, cur)}</div>
       <div class="dlg-foot"><button class="tb" id="tReset">Standard</button><div class="grow"></div><button class="tb primary" id="tOk">Fertig</button></div></div>`);
     const close = this.modal('TPO (Market Profile)', body);
-    body.addEventListener('change', (e) => { readField(e.target, cur); a.setTpo({ ...cur }); });
+    this.bindForm($('.form', body), cur, () => a.setTpo({ ...cur }));
     $('#tOk', body).onclick = close;
     $('#tReset', body).onclick = () => { close(); a.setTpo({ block: '30m', rowSize: 0, display: 'auto', colors: 'gradient', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false }); };
   }
@@ -773,8 +902,8 @@ export class UI {
       </div>
       <div class="dlg-foot"><button class="tb danger" id="sReset">Alles zurücksetzen</button><div class="grow"></div><button class="tb primary" id="sOk">Fertig</button></div></div>`);
     const close = this.modal('Einstellungen', body);
-    body.addEventListener('change', (e) => {
-      readField(e.target, flat);
+    this.bindForm($('.form', body), flat, (immediate) => {
+      if (!immediate) return;
       const disp = {};
       for (const [k, v] of Object.entries(flat)) if (k.startsWith('d.')) disp[k.slice(2)] = v;
       const themeChanged = flat.theme !== st.theme || flat.candles !== st.candles;
@@ -830,26 +959,68 @@ export class UI {
 }
 
 // ================================================================ Formulare
+const TV_BASE = ['#f23645', '#ff9800', '#ffeb3b', '#4caf50', '#089981', '#00bcd4', '#2962ff', '#673ab7', '#9c27b0', '#e91e63'];
+const TV_PALETTE = [
+  ['#ffffff', '#d1d4dc', '#b2b5be', '#9598a1', '#787b86', '#5d606b', '#434651', '#2a2e39', '#131722', '#000000'],
+  TV_BASE,
+  TV_BASE.map(c => mixHex(c, '#ffffff', 0.18)),
+  TV_BASE.map(c => mixHex(c, '#ffffff', 0.36)),
+  TV_BASE.map(c => mixHex(c, '#ffffff', 0.58)),
+  TV_BASE.map(c => mixHex(c, '#ffffff', 0.8)),
+  TV_BASE.map(c => mixHex(c, '#000000', 0.72)),
+  TV_BASE.map(c => mixHex(c, '#000000', 0.5)),
+];
+const STYLE_SEC = /Darstellung|Farbe|Stil|Linien|TPOs|Hintergrund|Beschriftung|Anzeige/i;
+/** Schema in Reiter aufteilen: Abschnitte mit tab: 'style' (oder Stil-Namen) → Stil; Farben aus Eingaben → Stil/Farben. */
+function splitSchema(schema) {
+  const tabs = { inputs: [], style: [] };
+  let g = null, gt = 'inputs';
+  const colors = { sec: 'Farben', fields: [] };
+  for (const f of schema) {
+    if (f.sec) { gt = f.tab || (STYLE_SEC.test(f.sec) ? 'style' : 'inputs'); g = { sec: f.sec, fields: [] }; tabs[gt].push(g); continue; }
+    if (!g) { g = { sec: null, fields: [] }; gt = 'inputs'; tabs.inputs.push(g); }
+    if (gt === 'inputs' && (f.t === 'color' || f.t === 'width')) colors.fields.push(f); else g.fields.push(f);
+  }
+  if (colors.fields.length) tabs.style.push(colors);
+  for (const k of Object.keys(tabs)) tabs[k] = tabs[k].filter(x => x.fields.length);
+  return tabs;
+}
+function groupsHtml(groups, s) {
+  return groups.map(g => (g.sec ? `<div class="f-sec">${esc(g.sec)}</div>` : '') + g.fields.map(f => fieldHtml(f, s)).join('')).join('');
+}
 function formHtml(schema, s) {
-  return schema.map(f => {
-    if (f.sec) return `<div class="f-sec">${esc(f.sec)}</div>`;
-    const v = s[f.k];
-    const id = 'f_' + f.k.replace(/\W/g, '_');
-    let input;
-    switch (f.t) {
-      case 'bool': input = `<label class="sw-toggle"><input type="checkbox" data-k="${f.k}" data-t="bool" ${v ? 'checked' : ''}><i></i></label>`; break;
-      case 'int': case 'num': input = `<input id="${id}" type="number" data-k="${f.k}" data-t="${f.t}" value="${v}" ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} step="${f.step || 1}">`; break;
-      case 'select': input = `<select id="${id}" data-k="${f.k}" data-t="select">${f.opts.map(([k, l]) => `<option value="${k}" ${String(k) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
-      case 'date': input = `<input id="${id}" type="date" data-k="${f.k}" data-t="date" value="${esc(v)}">`; break;
-      case 'color': {
-        const auto = v === 'auto';
-        input = `<span class="colf">${f.auto ? `<label class="mini"><input type="checkbox" data-k="${f.k}" data-t="auto" data-auto ${auto ? 'checked' : ''}> auto</label>` : ''}<input type="color" data-k="${f.k}" data-t="color" value="${auto ? '#888888' : toHex(v)}" ${auto ? 'disabled' : ''}></span>`;
-        break;
-      }
-      default: input = esc(String(v));
+  const out = [];
+  for (const f of schema) out.push(f.sec ? `<div class="f-sec">${esc(f.sec)}</div>` : fieldHtml(f, s));
+  return out.join('');
+}
+function swatchHtml(k, v) {
+  const auto = v === 'auto';
+  return `<button type="button" class="cswatch ${auto ? 'auto' : ''}" data-sw="${k}" style="--c:${auto ? 'transparent' : cssColor(v)}" title="Farbe wählen"></button>`;
+}
+function widthHtml(k, v) {
+  return `<span class="wpick" data-wk="${k}">${[1, 2, 3, 4].map(w => `<button type="button" class="${+v === w ? 'on' : ''}" data-w="${w}" title="${w} px"><i style="height:${w}px"></i></button>`).join('')}</span>`;
+}
+function fieldHtml(f, s) {
+  const v = s[f.k];
+  const id = 'f_' + f.k.replace(/\W/g, '_');
+  if (f.t === 'bool') {
+    const extra = (f.color ? swatchHtml(f.color, s[f.color]) : '') + (f.width ? widthHtml(f.width, s[f.width]) : '');
+    return `<div class="f-row f-chk"><label class="chk"><input type="checkbox" data-k="${f.k}" data-t="bool" ${v ? 'checked' : ''}><i></i><span>${esc(f.label)}</span></label>${extra ? `<span class="f-ctl">${extra}</span>` : ''}</div>`;
+  }
+  let input;
+  switch (f.t) {
+    case 'int': case 'num': input = `<input id="${id}" type="number" inputmode="decimal" data-k="${f.k}" data-t="${f.t}" value="${v}" ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} step="${f.step || 1}">`; break;
+    case 'select': input = `<select id="${id}" data-k="${f.k}" data-t="select">${f.opts.map(([k, l]) => `<option value="${k}" ${String(k) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
+    case 'date': input = `<input id="${id}" type="date" data-k="${f.k}" data-t="date" value="${esc(v)}">`; break;
+    case 'width': input = widthHtml(f.k, v); break;
+    case 'color': {
+      const auto = v === 'auto';
+      input = (f.auto ? `<label class="mini"><input type="checkbox" data-k="${f.k}" data-t="auto" data-auto ${auto ? 'checked' : ''}> auto</label>` : '') + swatchHtml(f.k, v);
+      break;
     }
-    return `<div class="f-row"><label for="${id}">${esc(f.label)}</label>${input}</div>`;
-  }).join('');
+    default: input = esc(String(v));
+  }
+  return `<div class="f-row"><label for="${id}">${esc(f.label)}</label><span class="f-ctl">${input}</span></div>`;
 }
 function readField(t, s) {
   const k = t.dataset.k;

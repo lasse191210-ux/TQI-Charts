@@ -7,6 +7,7 @@ import { TYPES } from './indicators.js';
 import { OverlayPrimitive, Scene } from './render/overlay.js';
 import { Drawings } from './render/drawings.js';
 import { TpoPaneView, buildTpoSessions } from './render/tpo.js';
+import { BigTrades } from './bigtrades.js';
 import { buildDayProfiles, autoRowSize, firstTouch } from './calc/profile.js';
 import { heikinAshi } from './calc/std.js';
 import * as U from './util.js';
@@ -29,7 +30,6 @@ export class App {
     this.data = new Map();      // uid → Ergebnis der Rechnung
     this.panes = new Map();     // uid → { series: {key: api}, ind }
     this.ext = { oi: null, funding: null };
-    this.big = [];              // große Trades (gruppiert)
     this.liqList = [];
     this.tape = [];
     this.fine = new Map();      // HVB 1m-Daten je Eimer
@@ -40,6 +40,12 @@ export class App {
     this._save = this._debounce(() => this.saveState(), 300);
     this._recompute = U.frameThrottle(() => this.recompute(), matchMedia('(max-width: 760px)').matches ? 500 : 250);
     this._live = U.frameThrottle(() => this.liveUpdate(), 60);
+    // Countdown bis Kerzenschluss am Preislabel
+    setInterval(() => { if (document.visibilityState === 'visible') this.overlay?.requestUpdate?.(); }, 1000);
+    this.bt = new BigTrades();
+    this.bt.on('change', () => this._recompute());
+    setInterval(() => this.bt.save(), 30000);
+    window.addEventListener('pagehide', () => this.bt.save());
   }
 
   // ---------------------------------------------------------------- Start
@@ -62,7 +68,8 @@ export class App {
 
   templateIndicators(key) {
     const t = TEMPLATES[key] || TEMPLATES.bild;
-    return t.list.map(x => ({ uid: U.uid(), type: x.type, visible: x.visible !== false, s: Object.assign(U.deepClone(TYPES[x.type].defaults), x.s || {}) }));
+    const mine = this.state?.myDefaults || {};
+    return t.list.map(x => ({ uid: U.uid(), type: x.type, visible: x.visible !== false, s: Object.assign(U.deepClone(TYPES[x.type].defaults), mine[x.type] ? U.mergeDefaults(TYPES[x.type].defaults, mine[x.type]) : {}, x.s || {}) }));
   }
 
   get market() { return MARKETS[this.state.market]; }
@@ -159,7 +166,7 @@ export class App {
     const type = this.state.chartType;
     if (type === 'tpo') {
       this.tpoView = new TpoPaneView(this);
-      this.series = this.chart.addCustomSeries(this.tpoView, { priceFormat: fmt, priceLineVisible: true, lastValueVisible: true, priceLineColor: '#e91e63' });
+      this.series = this.chart.addCustomSeries(this.tpoView, { priceFormat: fmt, priceLineVisible: true, lastValueVisible: false, priceLineColor: '#e91e63' });
     } else if (type === 'bars') this.series = this.chart.addSeries(BarSeries, { upColor: c.borderUp === '#131722' ? '#131722' : c.up, downColor: c.down, thinBars: false, priceFormat: fmt });
     else if (type === 'line') this.series = this.chart.addSeries(LineSeries, { color: '#2962ff', lineWidth: 2, priceFormat: fmt });
     else if (type === 'area') this.series = this.chart.addSeries(AreaSeries, { lineColor: '#2962ff', topColor: 'rgba(41,98,255,0.28)', bottomColor: 'rgba(41,98,255,0.02)', lineWidth: 2, priceFormat: fmt });
@@ -171,6 +178,9 @@ export class App {
         borderVisible: true, priceFormat: fmt,
       });
     }
+    // Preislinie gepunktet; weiße Kerzen auf weißem Grund → Linie in Randfarbe
+    const sameAsBg = (c.up || '').toLowerCase() === (this.theme.bg || '').toLowerCase();
+    this.series.applyOptions({ lastValueVisible: false, priceLineStyle: LineStyle.Dotted, ...(type !== 'tpo' && sameAsBg ? { priceLineColor: c.borderUp } : {}) });
     this.series.attachPrimitive(this.overlay);
     if (this.drawings) this.series.attachPrimitive(this.drawings.prim);
     this.chart.panes()[0]?.setStretchFactor(5);
@@ -218,7 +228,7 @@ export class App {
     this.hub.stopLive();
     this.hub.prune(mk, base);
     this.ext = { oi: null, funding: null };
-    this.big = []; this.liqList = []; this.tape = []; this.fine.clear(); this.fineQueue = [];
+    this.liqList = []; this.tape = []; this.fine.clear(); this.fineQueue = [];
     this.data.clear();
     for (const uid of [...this.panes.keys()]) this.removePane(uid);
     if (this.chartStoreOff) this.chartStoreOff();
@@ -248,6 +258,7 @@ export class App {
     this.fullRender();
     if (!this.isTpo) this.chart.timeScale().scrollToRealTime();
     this.applySpacing();
+    this.syncBigTrades();
     this.ui.setLoading(false);
     this.drawings.load();
     this.hub.startLive(mk, base, tf);
@@ -280,6 +291,10 @@ export class App {
   }
 
   onRange(r) {
+    if (r && this.bt.active && this.bars.length) {
+      const i = Math.max(0, Math.min(this.bars.length - 1, Math.floor(r.from)));
+      this.bt.want(this.bars[i].t, this.btHours());
+    }
     if (!r || !this.chartStore || this._loadingOlder) return;
     if (r.from < 30 && !this.chartStore.done && this.bars.length) {
       this._loadingOlder = true;
@@ -347,7 +362,9 @@ export class App {
       idx: (t) => { if (!this.bars.length || t < this.bars[0].t) return null; return U.floorIndex(this.bars, t); },
       fine: (t0, t1, live) => this.fineBars(t0, t1, live),
       ext: (k) => this.ext[k],
-      bigTrades: (min) => { const m = min > 0 ? min : this.autoBigUsd(); return this.big.filter(x => x.usd >= m); },
+      bigTrades: (min) => this.bt.active ? this.bt.orders(min > 0 ? min : this.autoBigUsd()) : [],
+      autoBig: () => this.autoBigUsd(),
+      btInfo: () => this.bt.info(),
       liqs: () => this.liqList,
     };
   }
@@ -396,10 +413,11 @@ export class App {
       const T = TYPES[ind.type];
       if (!T) continue;
       let d = null;
-      if (ind.visible) { try { d = T.compute(ind.s, ctx); } catch (e) { console.error(ind.type, e); } }
+      const on = ind.visible && this.visOnTf(ind);
+      if (on) { try { d = T.compute(ind.s, ctx); } catch (e) { console.error(ind.type, e); } }
       this.data.set(ind.uid, d);
-      if (T.pane === 'own') { try { this.updatePane(ind, T, d); } catch (e) { console.error(ind.type, e); const p = this.panes.get(ind.uid); if (p) p.lens = {}; } continue; }
-      if (!ind.visible || !d || !T.draw) continue;
+      if (T.pane === 'own') { try { this.updatePane(on ? ind : { ...ind, visible: false }, T, d); } catch (e) { console.error(ind.type, e); const p = this.panes.get(ind.uid); if (p) p.lens = {}; } continue; }
+      if (!on || !d || !T.draw) continue;
       try { T.draw(ind.s, d, scene, ctx); } catch (e) { console.error(ind.type, e); }
     }
     if (this.isTpo && this.tpoView) this.updateTpo(scene, ctx);
@@ -442,7 +460,7 @@ export class App {
     const pt = (v, i) => {
       const val = v.values[i], time = this.bars[i].t / 1000;
       if (!Number.isFinite(val)) return { time };
-      return v.colors ? { time, value: val, color: v.colors[i] } : { time, value: val };
+      return v.colors ? { time, value: val, color: U.cssColor(v.colors[i]) } : { time, value: val };
     };
     for (const pl of T.plots) {
       const s = p.series[pl.key];
@@ -450,7 +468,7 @@ export class App {
       const vis = !!ind.visible && !!v;
       if (p.vis?.[pl.key] !== vis) { s.applyOptions({ visible: vis }); (p.vis ||= {})[pl.key] = vis; }
       if (!v) { if (p.lens[pl.key]) { s.setData([]); p.lens[pl.key] = 0; } continue; }
-      if (v.color && p.col?.[pl.key] !== v.color) { s.applyOptions({ color: v.color }); (p.col ||= {})[pl.key] = v.color; }
+      if (v.color && p.col?.[pl.key] !== v.color) { s.applyOptions({ color: U.cssColor(v.color) }); (p.col ||= {})[pl.key] = v.color; }
       const prevN = p.lens[pl.key] || 0;
       if (!this._forcePanes && p.firstT === firstT && prevN && n >= prevN && n - prevN <= 2) {
         // nur das Ende hat sich geändert (Live)
@@ -481,6 +499,7 @@ export class App {
 
   // ---------------------------------------------------------------- Live
   onTrade(tr) {
+    if (this.bt.active) this.bt.onTrade(tr);
     // Tape und große Trades (gleicher Zeitstempel + Seite = eine Marktorder)
     const usd = tr.p * tr.q;
     const last = this.tape[this.tape.length - 1];
@@ -489,12 +508,6 @@ export class App {
     } else {
       this.tape.push({ t: tr.t, p: tr.p, q: tr.q, usd, buy: tr.buy });
       if (this.tape.length > 600) this.tape.splice(0, 200);
-    }
-    const g = this.tape[this.tape.length - 1];
-    if (g.usd >= 5000) {
-      const lb = this.big[this.big.length - 1];
-      if (lb && lb.t === g.t && lb.buy === g.buy) Object.assign(lb, g); else this.big.push({ ...g });
-      if (this.big.length > 6000) this.big.splice(0, 1000);
     }
     this.ui.tapeDirty = true;
     this._live();
@@ -587,7 +600,8 @@ export class App {
     if (!T) return;
     const ex = this.state.indicators.find(x => x.type === type);
     if (ex && !T.multi) { ex.visible = true; this.afterIndicatorChange(); return ex; }
-    const ind = { uid: U.uid(), type, visible: true, s: Object.assign(U.deepClone(T.defaults), opts) };
+    const mine = this.state.myDefaults?.[type];
+    const ind = { uid: U.uid(), type, visible: true, s: Object.assign(U.deepClone(T.defaults), mine ? U.mergeDefaults(T.defaults, mine) : {}, opts) };
     this.state.indicators.push(ind);
     this.afterIndicatorChange(true);
     return ind;
@@ -597,6 +611,14 @@ export class App {
     this.removePane(uid);
     this.data.delete(uid);
     this.afterIndicatorChange();
+  }
+  /** Sichtbarkeit je Zeiteinheit (Reiter „Sichtbarkeit“ wie bei TradingView). */
+  visOnTf(ind) {
+    const v = ind.vis;
+    if (!v) return true;
+    const tf = this.state.tf;
+    const cls = /m$/.test(tf) ? 'min' : /h$/.test(tf) ? 'hour' : tf === '1D' ? 'day' : 'week';
+    return v[cls] !== false;
   }
   toggleIndicator(uid) {
     const x = this.state.indicators.find(i => i.uid === uid);
@@ -617,6 +639,9 @@ export class App {
   }
   afterIndicatorChange(needData = false) {
     this._save();
+    this.syncBigTrades();
+    this.ui.renderTopbar();
+    this.ui.renderMobile();
     this.ui.renderLegend();
     this.recompute();
     if (needData) { this.ensureNeeds().then(() => this.refreshExt(true)); }
@@ -639,6 +664,7 @@ export class App {
   }
   setChartType(t) {
     const wasTpo = this.isTpo;
+    if (t === 'tpo' && !wasTpo) { this.state.lastType = this.state.chartType; this.state.lastTf = this.state.tf; }
     this.state.chartType = t;
     this._save();
     // TPO nutzt immer die eingestellte TPO-Periode (Standard 30 Min. wie ATAS)
@@ -646,19 +672,32 @@ export class App {
     this.view = this.makeView(); this.makeMainSeries(); this.applySpacing(); this.ui.renderAll();
     if (t === 'tpo' || wasTpo) this.recompute(true);
   }
-  /** TPO-Knopf: an = Market Profile (eigene Zeiteinheit), aus = vorheriger Charttyp und vorherige Zeiteinheit. */
-  toggleTpo() {
-    if (this.isTpo) {
-      const tf = this.state.lastTf;
-      this.state.lastTf = null;
-      if (tf && tf !== this.state.tf) { this.state.chartType = this.state.lastType || 'candles'; this.state.tf = tf; this._save(); this.ui.renderAll(); this.loadSymbol(); }
-      else this.setChartType(this.state.lastType || 'candles');
-    } else {
-      this.state.lastType = this.state.chartType;
-      this.state.lastTf = this.state.tf;
-      this.setChartType('tpo');
-    }
+  /** Big Trades: Historie/Live nur, wenn der Indikator da ist; anderes Symbol → neu. */
+  syncBigTrades() {
+    const ind = this.state.indicators.find(x => x.type === 'bigtrades' && x.visible);
+    const key = `${this.state.market}|${this.state.base}`;
+    if (ind && this.bars.length) {
+      this.bt.start(this.state.market, this.state.base, this.autoBigUsd() / 4);
+      const r = this.chart.timeScale().getVisibleLogicalRange();
+      const i = r ? Math.max(0, Math.min(this.bars.length - 1, Math.floor(r.from))) : Math.max(0, this.bars.length - 100);
+      this.bt.want(this.bars[i].t, this.btHours());
+    } else if (this.bt.active && this.bt.key !== key) this.bt.stop();
   }
+  btHours() { const ind = this.state.indicators.find(x => x.type === 'bigtrades'); return ind ? ind.s.hours : 0; }
+  /** TPO-Knopf: TPO im Kerzenchart ein/aus. Im eigenen TPO-Chart: zurück zum vorherigen Charttyp und zur vorherigen Zeiteinheit. */
+  toggleTpo() {
+    if (!this.isTpo) {
+      const ind = this.state.indicators.find(x => x.type === 'tpo');
+      if (ind) this.toggleIndicator(ind.uid); else this.addIndicator('tpo');
+      return;
+    }
+    const tf = this.state.lastTf;
+    this.state.lastTf = null;
+    const back = this.state.lastType && this.state.lastType !== 'tpo' ? this.state.lastType : 'candles';
+    if (tf && tf !== this.state.tf) { this.state.chartType = back; this.state.tf = tf; this._save(); this.ui.renderAll(); this.loadSymbol(); }
+    else this.setChartType(back);
+  }
+  get tpoOverlayOn() { return this.isTpo || this.state.indicators.some(x => x.type === 'tpo' && x.visible); }
   setTpo(patch) {
     const block = patch.block && patch.block !== this.state.tpo.block ? patch.block : null;
     this.state.tpo = { ...this.state.tpo, ...patch };

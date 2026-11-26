@@ -2,13 +2,20 @@
 // Linien je Kerze, gefüllte Bänder, horizontale Level ab Zeitpunkt, Boxen, Marker, Blasen,
 // Beschriftungen (ohne Überlappung) und farbige Preis-Labels an der Achse.
 import { floorIndex, tfMs } from '../util.js';
+import { volumeProfile, autoRows } from '../calc/vprofile.js';
+import { drawProfile } from './vpdraw.js';
+import { drawTpoOverlay } from './tpo.js';
 
 export class Scene {
   constructor() { this.clear(); }
   clear() {
     this.lines = []; this.fills = []; this.levels = []; this.boxes = []; this.marks = [];
-    this.bubbles = []; this.axis = []; this.barBoxes = [];
+    this.bubbles = []; this.axis = []; this.barBoxes = []; this.profiles = []; this.tpos = [];
   }
+  /** TPO-Profile je Session im Kerzenchart: { sessions, o (Einstellungen), blockMs } */
+  tpo(o) { this.tpos.push(o); }
+  /** Volumenprofil: { prof | dyn, from, to, place, widthFrac, mode, Farben, pocLine, vaLines, extendPoc } */
+  profile(o) { this.profiles.push(o); }
   line(vals, o = {}) { this.lines.push({ vals, color: o.color || '#888', width: o.width || 1, dash: o.dash || null, breaks: o.breaks || null, label: o.label || null, lc: o.lc || o.color, alpha: o.alpha ?? 1 }); }
   fill(a, b, o = {}) { this.fills.push({ a, b, color: o.color || 'rgba(128,128,128,.15)', breaks: o.breaks || null }); }
   /** Horizontales Level: p, from (ms), to (ms | null = bis rechts), ext (Kerzen nach rechts statt bis Rand). */
@@ -21,14 +28,58 @@ export class Scene {
 }
 
 const DASH = { dashed: [6, 4], dotted: [1.5, 3], sparse: [2, 5] };
+function isLight(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return false;
+  const n = parseInt(m[1], 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150;
+}
+function countdown(ms) {
+  const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  const p = (v) => String(v).padStart(2, '0');
+  if (d > 0) return `${d}T ${p(h)}:${p(m)}`;
+  if (h > 0) return `${p(h)}:${p(m)}:${p(x)}`;
+  return `${p(m)}:${p(x)}`;
+}
 
 export class OverlayPrimitive {
   constructor(app) {
     this.app = app;
     this.scene = new Scene();
     this._axisViews = [];
+    this._dyn = new WeakMap();
     this._paneBack = { zOrder: () => 'bottom', renderer: () => ({ draw: (t) => this._draw(t, 'back') }) };
     this._paneFront = { zOrder: () => 'normal', renderer: () => ({ draw: (t) => this._draw(t, 'front') }) };
+    this._axisPane = { zOrder: () => 'top', renderer: () => ({ draw: (t) => this._drawLastLabel(t) }) };
+  }
+  priceAxisPaneViews() { return [this._axisPane]; }
+
+  /** Letzter Preis an der Achse wie TradingView: Farbe der letzten Kerze, darunter Zeit bis Kerzenschluss. */
+  _drawLastLabel(target) {
+    const s = this.series, bars = this.app.bars;
+    if (!s || !bars || !bars.length) return;
+    const last = bars[bars.length - 1];
+    const y = s.priceToCoordinate(last.c);
+    if (y == null) return;
+    const cs = this.app.theme.candles;
+    const up = last.c >= last.o;
+    const bg = up ? cs.up : cs.down, border = up ? cs.borderUp : cs.borderDown;
+    const fg = isLight(bg) ? '#131722' : '#ffffff';
+    const tf = this.app.state.tf;
+    const left = last.t + tfMs(tf === '1M' ? '1W' : tf) - Date.now();
+    const cd = this.app.state.countdown !== false && left > 0 && left < 400 * 864e5 ? countdown(left) : null;
+    target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
+      const W = bitmapSize.width;
+      const h = (cd ? 31 : 18) * vr;
+      const top = Math.round(y * vr - 9 * vr);
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, top, W, h);
+      if (isLight(bg)) { ctx.strokeStyle = border; ctx.lineWidth = Math.max(1, hr); ctx.strokeRect(0.5 * hr, top + 0.5 * vr, W - hr, h - vr); }
+      ctx.fillStyle = fg; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.font = `${Math.round(11 * vr)}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+      ctx.fillText(this.app.fmt(last.c), 6 * hr, top + 9 * vr);
+      if (cd) { ctx.globalAlpha = 0.85; ctx.fillText(cd, 6 * hr, top + 22.5 * vr); ctx.globalAlpha = 1; }
+    });
   }
   attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this.requestUpdate = requestUpdate; }
   detached() { this.chart = null; this.series = null; }
@@ -64,7 +115,9 @@ export class OverlayPrimitive {
     target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr2 }) => {
       const W = bitmapSize.width, H = bitmapSize.height;
       const i0 = Math.max(0, Math.floor(vr.from) - 2), i1 = Math.min(bars.length - 1, Math.ceil(vr.to) + 2);
-      const xOf = (i) => { const x = ts.logicalToCoordinate(i); return x == null ? null : x * hr; };
+      // logicalToCoordinate kann nur ganze Indizes – Zwischenwerte selbst interpolieren
+      const spacing = ts.options().barSpacing || 6;
+      const xOf = (i) => { const f = Math.floor(i); const x = ts.logicalToCoordinate(f); return x == null ? null : (x + (i - f) * spacing) * hr; };
       const yOf = (p) => { const y = series.priceToCoordinate(p); return y == null ? null : y * vr2; };
       const barW = Math.max(1, (ts.options().barSpacing || 6) * hr);
       const lastIdx = bars.length - 1;
@@ -85,6 +138,26 @@ export class OverlayPrimitive {
       ctx.lineJoin = 'round';
 
       if (layer === 'back') {
+        // TPO (Market Profile) im Kerzenchart
+        if (sc.tpos.length) {
+          const fracIdx = (t) => {
+            if (t <= bars[0].t) return (t - bars[0].t) / step;
+            const lastT = bars[lastIdx].t;
+            if (t >= lastT) return lastIdx + (t - lastT) / step;
+            const i = floorIndex(bars, t), nx = bars[i + 1];
+            return i + (nx ? (t - bars[i].t) / (nx.t - bars[i].t) : 0);
+          };
+          const xOfTime = (t) => xOf(fracIdx(t) - 0.5);
+          for (const tp of sc.tpos) {
+            try {
+              drawTpoOverlay(ctx, tp.sessions, tp.o, { xOfTime, cellW: (tp.blockMs / step) * spacing * hr, yOf, W, H, hr, vr: vr2, dark: this.app.theme.dark }, tp.blockMs);
+            } catch (e) { console.error('TPO', e); }
+          }
+        }
+        // Volumenprofile (Session, Sichtbereich)
+        for (const pr of sc.profiles) {
+          try { this._profile(ctx, pr, { xOf, yOf, idxOfTime, W, H, hr, vr2, vr, bars, lastIdx }); } catch (e) { console.error('Profil', e); }
+        }
         // gefüllte Bänder
         for (const f of sc.fills) {
           ctx.fillStyle = f.color;
@@ -202,6 +275,13 @@ export class OverlayPrimitive {
           ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
           ctx.fillStyle = bu.fill; ctx.fill();
           if (bu.stroke) { ctx.strokeStyle = bu.stroke; ctx.lineWidth = hr; ctx.stroke(); }
+          if (bu.text && r >= 10 * hr) {
+            const fz = Math.max(8, Math.min(12, (r / hr) * 0.55));
+            ctx.font = `700 ${Math.round(fz * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillStyle = bu.tc || '#fff';
+            ctx.fillText(bu.text, x, y + 0.5 * vr2);
+          }
         }
         // Marker
         ctx.font = `600 ${Math.round(9 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
@@ -231,10 +311,53 @@ export class OverlayPrimitive {
         }
         // Beschriftungen ohne Überlappung
         this._drawLabels(ctx, labels, fontPx, W, H, vr2, hr);
+        // Symbolname am letzten Preis (wie TradingView)
+        if (this.app.state.symLabel !== false) {
+          const last = bars[lastIdx], y = yOf(last.c);
+          if (y != null) {
+            const txt = this.app.market.ticker(this.app.state.base).replace('.P', '');
+            ctx.font = `500 ${Math.round(11 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+            const w = ctx.measureText(txt).width;
+            ctx.fillStyle = this.app.theme.labelBg; ctx.fillRect(W - w - 8 * hr, y - 8 * vr2, w + 8 * hr, 16 * vr2);
+            ctx.fillStyle = this.app.theme.text; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+            ctx.fillText(txt, W - 4 * hr, y);
+          }
+        }
         this._backLabels = [];
       }
       ctx.restore();
     });
+  }
+
+  _profile(ctx, pr, env) {
+    const { xOf, yOf, idxOfTime, W, H, hr, vr2, vr, bars, lastIdx } = env;
+    let p = pr.prof, xa, xb, width;
+    if (pr.dyn) {
+      const a = Math.max(0, Math.ceil(vr.from)), b = Math.min(lastIdx, Math.floor(vr.to));
+      if (b < a) return;
+      let lo = Infinity, hi = -Infinity;
+      for (let i = a; i <= b; i++) { if (bars[i].l < lo) lo = bars[i].l; if (bars[i].h > hi) hi = bars[i].h; }
+      const rs = pr.dyn.rs > 0 ? pr.dyn.rs : autoRows(lo, hi, pr.dyn.rowsN || 80);
+      const key = `${a}|${b}|${rs}|${bars.length}|${bars[b].c}|${bars[b].v}|${pr.dyn.vaPct}`;
+      let c = this._dyn.get(pr.id);
+      if (!c || c.key !== key) { c = { key, p: volumeProfile(bars, a, b, rs, { vaPct: pr.dyn.vaPct }) }; this._dyn.set(pr.id, c); }
+      p = c.p;
+      if (!p) return;
+      width = W * pr.widthFrac;
+      if (pr.place === 'left') { xa = 2 * hr; xb = xa + width; } else { xb = W - 2 * hr; xa = xb - width; }
+    } else {
+      if (!p) return;
+      const ia = pr.from <= bars[0].t ? -0.5 : idxOfTime(pr.from) - 0.5;
+      const ib = idxOfTime(pr.to) - 0.5;
+      xa = xOf(ia); xb = xOf(ib);
+      if (xa == null || xb == null || xb < 0 || xa > W) return;
+      width = Math.max(0, xb - xa) * pr.widthFrac;
+    }
+    drawProfile(ctx, p, {
+      xa, xb, width, place: pr.place, mode: pr.mode, va: pr.va,
+      color: pr.color, vaColor: pr.vaColor, pocColor: pr.pocColor, buyColor: pr.buyColor, sellColor: pr.sellColor,
+      pocLine: pr.pocLine, vaLines: pr.vaLines, lineColor: pr.lineColor, pocTo: pr.extendPoc ? W : null,
+    }, { yOf, H, vr: vr2, hr });
   }
 
   _drawLabels(ctx, labels, fontPx, W, H, vr2, hr) {

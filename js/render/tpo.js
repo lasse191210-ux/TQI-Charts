@@ -241,3 +241,104 @@ export class TpoPaneView {
 
 export function sessionLabelColor(dark) { return dark ? '#c9c7c1' : '#2a2e39'; }
 export { rgba };
+
+/**
+ * TPO als Overlay im Kerzenchart (Hintergrund-Ebene, Kerzen liegen darüber).
+ * env = { xOfTime(t) → Bitmap-x (linke Kante), cellW (Bitmap-px je TPO-Periode), yOf(Preis) → Bitmap-y, W, H, hr, vr, dark }
+ * o   = Einstellungen des TPO-Indikators
+ */
+export function drawTpoOverlay(ctx, sessions, o, env, blockMs) {
+  const { xOfTime, cellW, yOf, W, H, hr, vr, dark } = env;
+  const total = Math.round(DAY / blockMs);
+  const fontFam = '-apple-system, "Segoe UI", Roboto, "SF Mono", monospace';
+  const labels = [];
+  for (const s of sessions) {
+    if (!s.rows) continue;
+    const x0 = xOfTime(s.start);
+    if (x0 == null) continue;
+    const fullEnd = x0 + total * cellW;
+    if (fullEnd < 0 || x0 > W) continue;
+    const rs = s.rowSize;
+    const rowTop = (r) => yOf((s.rowLo + r + 1) * rs), rowBot = (r) => yOf((s.rowLo + r) * rs);
+    const y0 = rowTop(s.rows.length - 1), y1 = rowBot(0);
+    if (y0 == null || y1 == null || y1 < 0 || y0 > H) continue;
+    const rowH = Math.abs(rowBot(0) - rowTop(0));
+    const letters = o.display === 'letters' || (o.display === 'auto' && rowH >= 9 * vr && cellW >= 8 * hr);
+    const profEnd = x0 + (s.maxCount + 0.5) * cellW;
+    const lineEnd = o.lines === 'session' ? fullEnd : Math.max(profEnd + 6 * hr, x0 + cellW * 4);
+    // Value Area hinterlegen
+    if (o.va && o.vaFill && s.vaLo != null) {
+      const ya = rowTop(s.vaHi), yb = rowBot(s.vaLo);
+      ctx.fillStyle = rgba(o.vaFillColor, o.vaFillOpacity);
+      ctx.fillRect(x0, ya, lineEnd - x0, yb - ya);
+    }
+    // Single Prints
+    if (o.singles) {
+      ctx.fillStyle = rgba(o.singleColor, 0.28);
+      for (const [a, b] of s.singles) { const ya = rowTop(b), yb = rowBot(a); ctx.fillRect(x0, ya, Math.max(cellW, 3 * hr), yb - ya); }
+    }
+    // TPOs
+    ctx.globalAlpha = o.opacity;
+    if (letters) {
+      const fs = Math.max(7 * vr, Math.min(rowH * 0.9, cellW * 1.1, 14 * vr));
+      ctx.font = `600 ${Math.round(fs)}px ${fontFam}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    }
+    for (let r = 0; r < s.rows.length; r++) {
+      const list = s.rows[r];
+      if (!list.length) continue;
+      const yt = rowTop(r), yb = rowBot(r);
+      if (yb < -10 || yt > H + 10) continue;
+      const h = Math.max(1, yb - yt);
+      const isPoc = o.poc && r === s.pocRow;
+      if (letters) {
+        const yc = yt + h / 2;
+        for (let k = 0; k < list.length; k++) {
+          ctx.fillStyle = isPoc ? o.pocColor : (o.colors === 'mono' ? o.mono : periodColor(list[k], total, 'gradient', dark));
+          ctx.fillText(letterOf(list[k]), x0 + (k + 0.5) * cellW, yc);
+        }
+      } else {
+        const gap = h > 3 * vr ? Math.max(1, Math.round(0.6 * vr)) : 0;
+        const wgap = cellW > 4 * hr ? Math.max(1, Math.round(0.6 * hr)) : 0;
+        if (o.colors === 'mono' || cellW < 2 * hr) {
+          ctx.fillStyle = isPoc ? o.pocColor : o.mono;
+          ctx.fillRect(x0, yt + gap / 2, list.length * cellW - wgap, h - gap);
+        } else {
+          for (let k = 0; k < list.length; k++) {
+            ctx.fillStyle = isPoc ? o.pocColor : periodColor(list[k], total, 'gradient', dark);
+            ctx.fillRect(x0 + k * cellW, yt + gap / 2, cellW - wgap, h - gap);
+          }
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+    // Initial Balance
+    if (o.ib && Number.isFinite(s.ibHi)) {
+      const ya = yOf(s.ibHi), yb = yOf(s.ibLo);
+      if (ya != null && yb != null) { ctx.fillStyle = s.ibDone ? o.ibColor : rgba(o.ibColor, 0.5); ctx.fillRect(x0 - 4 * hr, ya, 2.5 * hr, yb - ya); }
+    }
+    // Linien
+    const line = (p, col, name) => {
+      const y = yOf(p);
+      if (y == null || y < 0 || y > H) return;
+      const yy = Math.round(y) + 0.5;
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, hr * (o.width || 1));
+      ctx.beginPath(); ctx.moveTo(x0, yy); ctx.lineTo(lineEnd, yy); ctx.stroke();
+      if (o.names) labels.push({ x: lineEnd + 3 * hr, y: yy, text: name, color: col });
+    };
+    if (o.va && s.vah != null) { line(s.vah, o.vaColor, 'VAH'); line(s.val, o.vaColor, 'VAL'); }
+    if (o.poc && s.poc != null) line(s.poc, o.pocColor, 'POC');
+  }
+  if (labels.length) {
+    ctx.font = `600 ${Math.round(9.5 * vr)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    labels.sort((a, b) => a.y - b.y);
+    let prevY = -Infinity, prevX = null;
+    for (const l of labels) {
+      if (prevX != null && Math.abs(prevX - l.x) < 2 && l.y < prevY + 11 * vr) l.y = prevY + 11 * vr;
+      prevY = l.y; prevX = l.x;
+      ctx.fillStyle = l.color;
+      ctx.fillText(l.text, l.x, l.y);
+    }
+  }
+}

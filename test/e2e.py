@@ -128,11 +128,30 @@ def funding(q):
         t += 8 * HOUR
     return out
 
+K_TR = 40  # simulierte aggTrades je 1m-Kerze
+def agg_trades(q):
+    f = factor_for(q.get('symbol', ['BTCUSDT'])[0])
+    max_id = len(t1) * K_TR - 1
+    limit = min(1000, int(q.get('limit', ['500'])[0]))
+    if 'fromId' in q:
+        a = int(q['fromId'][0]); b = min(max_id, a + limit - 1)
+    else:
+        b = max_id; a = max(0, b - limit + 1)
+    out = []
+    for i in range(a, b + 1):
+        m = i // K_TR; j = i % K_TR
+        lo, hi = l1[m] * f, h1[m] * f
+        r = ((i * 2654435761) % 4294967296) / 4294967296
+        buy = j < int(round(K_TR * b1[m] / v1[m]))
+        out.append({'a': i, 'p': f'{lo + (hi - lo) * r:.2f}', 'q': f'{v1[m] / K_TR / f:.4f}', 'f': i, 'l': i, 'T': int(t1[m] + j * (MIN // K_TR)), 'm': not buy})
+    return out
+
 def api(url):
     u = urlparse(url)
     q = parse_qs(u.query)
     p = u.path
     if p.endswith('/klines'): return klines(q)
+    if p.endswith('/aggTrades'): return agg_trades(q)
     if p.endswith('/ticker/24hr'):
         f = factor_for(q.get('symbol', ['BTCUSDT'])[0])
         return {'symbol': q.get('symbol', ['BTCUSDT'])[0], 'lastPrice': f'{LAST*f:.4f}', 'priceChangePercent': f'{(hash(q.get("symbol",[""])[0]) % 900 - 450) / 100:.2f}', 'quoteVolume': '123456789'}
@@ -262,8 +281,8 @@ def run(scenario='all'):
             # Dialoge
             page.evaluate("tqi.ui.openIndicatorDialog()"); shot(page, '07_dialog_indikatoren', 600)
             page.keyboard.press('Escape')
-            uid = page.evaluate("tqi.state.indicators.find(i => i.type === 'naked').uid")
-            page.evaluate(f"tqi.ui.openIndicatorSettings('{uid}')"); shot(page, '08_dialog_settings_naked', 600)
+            uid = page.evaluate("tqi.state.indicators.find(i => i.type === 'keylevels').uid")
+            page.evaluate(f"tqi.ui.openIndicatorSettings('{uid}')"); shot(page, '08_dialog_settings_keylevels', 600)
             page.keyboard.press('Escape')
             page.evaluate("tqi.ui.openSymbolDialog()"); shot(page, '09_dialog_symbol', 600)
             page.keyboard.press('Escape')

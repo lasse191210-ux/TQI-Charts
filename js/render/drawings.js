@@ -1,10 +1,12 @@
 // Zeichenwerkzeuge wie in TradingView: Trendlinie, Strahl, horizontale Linie/Strahl, vertikale Linie,
 // Rechteck, Fibonacci, Preisspanne (Messen), Text, Long-/Short-Position. Speicherung je Coin im Browser.
-import { storage, floorIndex, tfMs, fmtPct, fmtDateTime, rgba, uid, nf } from '../util.js';
+import { storage, floorIndex, tfMs, fmtPct, fmtDateTime, rgba, uid, nf, fmtCompact } from '../util.js';
+import { rangeProfile, autoRows } from '../calc/vprofile.js';
+import { drawProfile } from './vpdraw.js';
 
 export const TOOLS = [
   ['cursor', 'Kreuz'], ['trend', 'Trendlinie'], ['ray', 'Strahl'], ['hline', 'Horizontale Linie'], ['hray', 'Horizontaler Strahl'],
-  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'],
+  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'], ['fvp', 'Fixed Range Volume Profile'],
   ['text', 'Text'], ['long', 'Long-Position'], ['short', 'Short-Position'],
 ];
 const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short']);
@@ -70,7 +72,13 @@ export class Drawings {
     const i = Math.floor(l);
     return b[i].t + (l - i) * (b[i + 1].t - b[i].t);
   }
-  tToX(t) { const l = this.tToL(t); return l == null ? null : this.chart.timeScale().logicalToCoordinate(l); }
+  tToX(t) {
+    const l = this.tToL(t);
+    if (l == null) return null;
+    // logicalToCoordinate kann nur ganze Indizes – Zwischenwerte selbst interpolieren
+    const ts = this.chart.timeScale(), f = Math.floor(l), x = ts.logicalToCoordinate(f);
+    return x == null ? null : x + (l - f) * (ts.options().barSpacing || 6);
+  }
   pToY(p) { return this.series?.priceToCoordinate(p) ?? null; }
   /** Punkt aus Mausposition (x, y in CSS-Pixeln relativ zum Chart). Zeit auf Kerzenmitte, Magnet optional. */
   pointAt(x, y) {
@@ -228,7 +236,12 @@ export class Drawings {
       const g = this._geom(it);
       if (g.y1 == null) continue;
       const near = (px, py) => px != null && py != null && Math.hypot(x - px, y - py) < 9;
-      if (this.sel === it) {
+      if (this.sel === it && it.type === 'fvp') {
+        const b = this._fvpBox(it);
+        const first = it.pts[0].t <= it.pts[1].t ? 0 : 1;
+        if (b && near(b.xa, b.yt)) return { item: it, handle: first };
+        if (b && near(b.xb, b.yb)) return { item: it, handle: 1 - first };
+      } else if (this.sel === it) {
         if (it.type === 'long' || it.type === 'short') {
           if (near(g.x1, this.pToY(it.stop))) return { item: it, handle: 'stop' };
           if (near(g.x1, this.pToY(it.target))) return { item: it, handle: 'target' };
@@ -240,6 +253,11 @@ export class Drawings {
         }
       }
       switch (it.type) {
+        case 'fvp': {
+          const b = this._fvpBox(it);
+          if (b && x >= b.xa - 4 && x <= b.xb + 4 && y >= b.yt - 4 && y <= b.yb + 4) return { item: it };
+          break;
+        }
         case 'hline': if (Math.abs(y - g.y1) < 6) return { item: it }; break;
         case 'hray': if (Math.abs(y - g.y1) < 6 && x >= g.x1 - 6) return { item: it }; break;
         case 'vline': if (g.x1 != null && Math.abs(x - g.x1) < 6) return { item: it }; break;
@@ -276,7 +294,10 @@ export class Drawings {
     if (this.app.state.drawHide) return out;
     for (const it of this.items) {
       if (it.type === 'hline' || it.type === 'hray') add(it.pts[0].p, it.color);
-      else if (it === this.sel) {
+      else if (it === this.sel && it.type === 'fvp') {
+        const p = this._fvp(it);
+        if (p) { add(p.poc, '#f0961e'); add(p.vah, '#5b7fe0'); add(p.val, '#5b7fe0'); }
+      } else if (it === this.sel) {
         if (it.type === 'long' || it.type === 'short') { add(it.pts[0].p, '#2962ff'); add(it.stop, '#ef5350'); add(it.target, '#26a69a'); }
         else if (it.type !== 'vline' && it.type !== 'text') { add(it.pts[0].p, it.color); add(it.pts[1].p, it.color); }
       }
@@ -386,6 +407,31 @@ export class Drawings {
             ctx.fillText(l1, mx, by + 12 * vr); ctx.font = font(11); ctx.fillText(l2, mx, by + 27 * vr);
             break;
           }
+          case 'fvp': {
+            const b = this._fvpBox(it);
+            if (!b) break;
+            const p = b.p;
+            ctx.fillStyle = rgba(col, sel ? 0.08 : 0.04);
+            ctx.fillRect(X(b.xa), Y(b.yt), X(b.xb - b.xa), Y(b.yb - b.yt));
+            if (sel) { ctx.strokeStyle = rgba(col, 0.6); ctx.lineWidth = Math.max(1, hr); ctx.strokeRect(X(b.xa), Y(b.yt), X(b.xb - b.xa), Y(b.yb - b.yt)); }
+            const mode = it.mode || 'volume';
+            drawProfile(ctx, p, {
+              xa: X(b.xa), xb: X(b.xb), width: X(b.xb - b.xa) * (it.wf || 0.4), place: 'left', mode, va: true,
+              color: rgba('#8c94a6', 0.5), vaColor: rgba('#6a8ee8', 0.5), pocColor: rgba('#f0961e', 0.9),
+              buyColor: rgba('#26a69a', 0.55), sellColor: rgba('#ef5350', 0.55), pocLine: true, vaLines: true, lineColor: rgba('#5b7fe0', 0.85),
+            }, { yOf: (pr) => { const yy = this.pToY(pr); return yy == null ? null : Y(yy); }, H, vr, hr });
+            ctx.font = font(10.5, 600); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+            const lab = (txt, price, c) => { const yy = this.pToY(price); if (yy == null) return; ctx.fillStyle = c; ctx.fillText(txt, X(b.xb) - 4 * hr, Y(yy) - 7 * vr); };
+            lab(`POC ${this.app.fmt(p.poc)}`, p.poc, '#e08a14');
+            lab(`VAH ${this.app.fmt(p.vah)}`, p.vah, '#5b7fe0');
+            lab(`VAL ${this.app.fmt(p.val)}`, p.val, '#5b7fe0');
+            ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = font(10.5, 500);
+            ctx.fillStyle = th.dark ? '#b2b5be' : '#50535e';
+            const dl = Number.isFinite(p.delta) ? ` · Δ ${p.delta >= 0 ? '+' : '−'}${fmtCompact(Math.abs(p.delta))}` : '';
+            ctx.fillText(`Vol ${fmtCompact(p.total)}${dl}`, X(b.xa) + 2 * hr, Y(b.yb) + 4 * vr);
+            handles.push([b.xa, b.yt], [b.xb, b.yb]);
+            break;
+          }
           case 'text': {
             if (g.x1 == null) break;
             ctx.font = font(13, 600); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -427,6 +473,45 @@ export class Drawings {
     });
   }
 }
+
+// ---------------------------------------------------------------- Fixed Range Volume Profile
+Drawings.prototype._fvpSource = function (t0, t1) {
+  // feinste geladene Zeiteinheit, die den Bereich abdeckt (z. B. 1m vom Volume Profile), sonst Chart-Kerzen
+  const app = this.app, chartMs = this._step();
+  let best = null;
+  for (const st of app.hub.storesFor(app.state.market, app.state.base)) {
+    const ms = tfMs(st.tf);
+    if (!st.bars.length || ms >= chartMs || st.bars[0].t > t0 || (t1 - t0) / ms > 50000) continue;
+    if (!best || ms < tfMs(best.tf)) best = st;
+  }
+  return best ? best.bars : app.bars;
+};
+Drawings.prototype._fvp = function (it) {
+  const bars = this.app.bars;
+  if (!bars.length) return null;
+  const step = this._step();
+  const t0 = Math.min(it.pts[0].t, it.pts[1].t), t1 = Math.max(it.pts[0].t, it.pts[1].t) + step;
+  const src = this._fvpSource(t0, t1);
+  const last = src[src.length - 1];
+  let lo = Infinity, hi = -Infinity;
+  const i0 = floorIndex(bars, t0), i1 = Math.min(bars.length - 1, floorIndex(bars, t1 - 1));
+  for (let i = Math.max(0, i0); i <= i1; i++) { if (bars[i].l < lo) lo = bars[i].l; if (bars[i].h > hi) hi = bars[i].h; }
+  if (!Number.isFinite(lo)) return null;
+  const rs = it.rows > 0 ? it.rows : autoRows(lo, hi, it.rowsN || 70);
+  const key = `${t0}|${t1}|${rs}|${src.length}|${last?.t}|${last?.c}|${last?.v}`;
+  if (!it._c || it._c.key !== key) Object.defineProperty(it, '_c', { value: { key, p: rangeProfile(src, t0, t1, rs, { vaPct: it.vaPct || 70 }) }, writable: true, configurable: true, enumerable: false });
+  return it._c.p;
+};
+Drawings.prototype._fvpBox = function (it) {
+  const p = this._fvp(it);
+  if (!p) return null;
+  const ts = this.chart.timeScale();
+  const half = (ts.options().barSpacing || 6) / 2;
+  const t0 = Math.min(it.pts[0].t, it.pts[1].t), t1 = Math.max(it.pts[0].t, it.pts[1].t);
+  const xa = this.tToX(t0), xb = this.tToX(t1), yt = this.pToY(p.hi), yb = this.pToY(p.lo);
+  if (xa == null || xb == null || yt == null || yb == null) return null;
+  return { p, xa: xa - half, xb: xb + half, yt, yb };
+};
 
 function segDist(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;

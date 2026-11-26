@@ -219,6 +219,27 @@ function binanceBase(perp) {
     depthSocket(symbol, onBook, onStatus) {
       return binanceBook(perp, symbol, onBook, onStatus);
     },
+    /** Trades rückwärts (neueste zuerst), Seiten zu 1000 aggTrades. Futures: Gewicht 20 je Abfrage → Pause 650 ms. */
+    async *tradeHistory(symbol) {
+      const path = perp ? '/fapi/v1/aggTrades' : '/api/v3/aggTrades';
+      const pace = perp ? 650 : 220;
+      const parse = (j) => j.map(x => ({ t: +x.T, p: +x.p, q: +x.q, buy: !x.m, id: +x.a }));
+      let host = null, j = null, err;
+      for (const h of this.hosts) {
+        try { j = await getJson(`${h}${path}?${qs({ symbol, limit: 1000 })}`); host = h; break; } catch (e) { err = e; }
+      }
+      if (!host) throw err;
+      if (!Array.isArray(j) || !j.length) return;
+      let minId = +j[0].a;
+      yield { trades: parse(j), pace };
+      while (minId > 0) {
+        const from = Math.max(0, minId - 1000);
+        j = await getJson(`${host}${path}?${qs({ symbol, fromId: from, limit: minId - from })}`);
+        if (!Array.isArray(j) || !j.length) return;
+        minId = +j[0].a;
+        yield { trades: parse(j), pace };
+      }
+    },
     async fetchTicker(symbol) {
       const path = perp ? '/fapi/v1/ticker/24hr' : '/api/v3/ticker/24hr';
       const j = await getJson(`${this.hosts[0]}${path}?symbol=${symbol}`, { retries: 0 });
@@ -371,6 +392,12 @@ function bybitBase(category) {
         },
       }).start();
     },
+    /** Bybit liefert öffentlich nur die letzten Trades (Perp 1000, Spot 60). */
+    async *tradeHistory(symbol) {
+      const j = await getJson(`https://api.bybit.com/v5/market/recent-trade?${qs({ category, symbol, limit: category === 'spot' ? 60 : 1000 })}`);
+      const list = j.result?.list || [];
+      yield { trades: list.map(x => ({ t: +x.time, p: +x.price, q: +x.size, buy: x.side === 'Buy' })), pace: 0, limited: true };
+    },
     async fetchTicker(symbol) {
       const j = await getJson(`https://api.bybit.com/v5/market/tickers?category=${category}&symbol=${symbol}`, { retries: 0 });
       const x = j.result?.list?.[0];
@@ -482,6 +509,18 @@ const okxPerp = {
       },
     }).start();
   },
+  /** Trades rückwärts, Seiten zu 100 (Paging über tradeId). */
+  async *tradeHistory(instId) {
+    const ct = await okxContractValue(instId);
+    let after;
+    for (let g = 0; g < 5000; g++) {
+      const j = await getJson(`https://www.okx.com/api/v5/market/history-trades?${qs({ instId, limit: 100, type: 1, after })}`);
+      const list = j.data || [];
+      if (!list.length) return;
+      yield { trades: list.map(x => ({ t: +x.ts, p: +x.px, q: +x.sz * ct, buy: x.side === 'buy' })), pace: 60 };
+      after = list[list.length - 1].tradeId;
+    }
+  },
   async fetchTicker(instId) {
     const j = await getJson(`https://www.okx.com/api/v5/market/ticker?instId=${instId}`, { retries: 0 });
     const x = j.data?.[0];
@@ -533,6 +572,16 @@ const coinbaseSpot = {
         onTrade({ t: Date.parse(m.time), p: +m.price, q: +m.size, buy: m.side === 'sell' });
       },
     }).start();
+  },
+  /** Trades rückwärts, Seiten zu 1000 (after = trade_id → ältere). side = Maker-Seite. */
+  async *tradeHistory(product) {
+    let after;
+    for (let g = 0; g < 3000; g++) {
+      const j = await getJson(`https://api.exchange.coinbase.com/products/${product}/trades?${qs({ limit: 1000, after })}`);
+      if (!Array.isArray(j) || !j.length) return;
+      yield { trades: j.map(x => ({ t: Date.parse(x.time), p: +x.price, q: +x.size, buy: x.side === 'sell' })), pace: 120 };
+      after = j[j.length - 1].trade_id;
+    }
   },
   async fetchTicker(product) {
     const j = await getJson(`https://api.exchange.coinbase.com/products/${product}/stats`, { retries: 0 });
