@@ -28,8 +28,10 @@ Krypto-Charts im Browser, aufgebaut wie DM Charts / TradingView – mit den eige
 - **Alarme:** Alarm-Linie ziehen (kreuzt / steigt über / fällt unter), Ton, Vibration, System-Benachrichtigung – solange die Seite offen ist
 - **TPO-Ansicht (wie MMT):** Profil antippen → mit Nachbar zusammenfügen, an einer Stelle teilen, trennen
 - **Einstellungen wie TradingView:** Reiter Eingaben / Stil / Sichtbarkeit, Farbwähler mit Palette und Deckkraft, Linienbreite, eigene Standardwerte speichern
-- **Vorlagen:** Standard (RVWAP, VWAP-Bänder, Key Levels durchgezogen ab Entstehung, SFP, Options-Level, Big Trades), Nur Key Levels, TPO-Ansicht (wie MMT), Orderflow, Nur Kerzen. Einstellungen bleiben beim Wechseln erhalten, eigene Vorlagen speicherbar
-- Dunkel und hell, Handy-Ansicht wie die TradingView-App, Screenshot, als App auf den Home-Bildschirm legbar
+- **Vorlagen:** Standard (meine Key Levels: TPO, Key Levels, VWAP-Bänder, RVWAP 365/90/7 von Bitstamp, High Volume Bars, Naked POC/UFA/Tails, Institutionelle Level, SFP, Volumen-Kerzen, Big Trades), Nur Key Levels, TPO-Ansicht (wie MMT), Orderflow, Nur Kerzen. Einstellungen bleiben beim Wechseln erhalten, eigene Vorlagen speicherbar, in eine andere Vorlage kopieren, als Code oder Link teilen (z. B. vom PC aufs Handy) und importieren
+- **Chart-Einstellungen wie ATAS:** Kerzenkörper, Rand und Docht (steigend/fallend), Hintergrund, Gitter, Fadenkreuz, Schrift, Preislinie – Vorlagen Grün/Rot, ATAS, Schwarz/Weiß, Hohl
+- **TQI Trader (Bybit USDT-Perps, Demo oder Live):** Panel zum Öffnen und Schließen wie das ATAS-Trading-Panel (PC rechts, Handy von unten). Entry/Stop/Ziel per Strg/Umschalt/Alt-Klick oder „antippen“, Linien im Chart ziehen, Menge aus Risiko inkl. Gebühren, Hebel automatisch, Limit (Post-Only), Stop (Ausbruch) oder Market, SL/TP direkt an der Order, Position mit SL/TP/Liquidation, Break-even, Schließen, Orders löschen. Jede Aktion wird vorher bestätigt, nichts handelt automatisch. API-Schlüssel trägt man selbst ein (nur „Verträge – Orders und Positionen“, keine Auszahlung), sie bleiben nur im eigenen Browser
+- Dunkel und hell, Handy-Ansicht wie die TradingView-App, Screenshot, als App installierbar (PC: Knopf „App installieren“ oben bzw. Chrome/Edge-Adressleiste; iPhone: Teilen → Zum Home-Bildschirm)
 
 Einstellungen, Indikatoren, Zeichnungen und Watchlist werden nur im eigenen Browser gespeichert (localStorage).
 
@@ -48,7 +50,7 @@ Reines HTML/CSS/JavaScript (ES-Module), kein Build-Schritt. Lokal starten:
 python3 -m http.server 8000
 ```
 
-Tests: `node --test test/calc.test.mjs` (Rechnungen), `python3 test/e2e.py` und `python3 test/functional.py` (Browser mit simulierten Börsendaten, braucht Playwright).
+Tests: `node --test test/calc.test.mjs` (Rechnungen), `python3 test/e2e.py`, `python3 test/functional.py`, `python3 test/v11.py` und `python3 test/v12.py` (Browser mit simulierten Börsendaten und simuliertem Bybit-Konto, braucht Playwright).
 
 ## Lizenzen
 

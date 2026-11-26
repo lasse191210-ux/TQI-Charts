@@ -105,6 +105,54 @@ export class Drawings {
     const el = this.app.ui.chartEl;
     const layer = this.app.ui.drawLayer;
     const rel = (e, node) => { const r = node.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    // TQI Trader: Linien ziehen, Strg/Umschalt/Alt-Klick bzw. „antippen“ setzt Entry/Stop/Ziel (vor allen anderen Eingaben)
+    el.addEventListener('pointerdown', (e) => {
+      const T = this.app.trader;
+      if (!T || !this.series || this.tool !== 'cursor' || e.button > 0) return;
+      const { x, y } = rel(e, el);
+      if (T.pick || ((e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) && T.open)) {
+        const p = this.series.coordinateToPrice(y);
+        if (p != null && T.chartClick(p, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey })) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+      }
+      const W = el.clientWidth;
+      const hit = x < W ? T.lines().find(l => l.drag && Math.abs((this.pToY(l.p) ?? -1e9) - y) < (e.pointerType === 'touch' ? 12 : 6)) : null;
+      if (!hit) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      this._trDrag = { id: hit.id, p: hit.p };
+      this.chart.applyOptions({ handleScroll: false, handleScale: false });
+      try { el.setPointerCapture(e.pointerId); } catch { /* egal */ }
+    }, true);
+    el.addEventListener('pointermove', (e) => {
+      const d = this._trDrag;
+      if (!d) {
+        const T = this.app.trader;
+        if (T && e.pointerType === 'mouse' && this.tool === 'cursor' && this.series) {
+          const { y } = rel(e, el);
+          this._trHover = T.lines().some(l => l.drag && Math.abs((this.pToY(l.p) ?? -1e9) - y) < 6);
+          if (this._trHover) el.style.cursor = 'ns-resize';
+        }
+        return;
+      }
+      e.stopImmediatePropagation();
+      const { y } = rel(e, el);
+      const p = this.series.coordinateToPrice(y);
+      if (p == null) return;
+      d.p = p;
+      this.app.trader.dragLine(d.id, p, false);
+      this._axisViews = this._buildAxis();
+      this.requestUpdate?.();
+    }, true);
+    const trEnd = (e) => {
+      const d = this._trDrag;
+      if (!d) return;
+      e.stopImmediatePropagation();
+      this._trDrag = null;
+      this.chart.applyOptions({ handleScroll: true, handleScale: true });
+      this.app.trader.dragLine(d.id, d.p, true);
+      this._changed(false);
+    };
+    el.addEventListener('pointerup', trEnd, true);
+    el.addEventListener('pointercancel', trEnd, true);
     // Zeichnen: eigene Ebene fängt alle Eingaben ab
     layer.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -161,7 +209,7 @@ export class Drawings {
       if (this.drag) { this._dragTo(x, y); return; }
       if (e.pointerType === 'mouse') {
         const h = this._hit(x, y);
-        el.style.cursor = h ? (h.handle != null ? 'grab' : 'pointer') : '';
+        el.style.cursor = h ? (h.handle != null ? 'grab' : 'pointer') : (this._trHover ? 'ns-resize' : '');
       }
     }, true);
     const end = () => {
@@ -313,7 +361,8 @@ export class Drawings {
   // ---------------------------------------------------------------- Achsen-Labels (horizontale Linien, Auswahl)
   _buildAxis() {
     const out = [];
-    const add = (p, bg) => out.push({ coordinate: () => this.pToY(p) ?? -100, text: () => this.app.fmt(p), textColor: () => '#fff', backColor: () => bg, visible: () => true, tickVisible: () => true });
+    const add = (p, bg) => out.push({ coordinate: () => this.pToY(p) ?? -100, text: () => this.app.fmt(p), textColor: () => (lightCol(bg) ? '#131722' : '#fff'), backColor: () => bg, visible: () => true, tickVisible: () => true });
+    for (const ln of this.app.trader?.lines() || []) add(this._trDrag?.id === ln.id ? this._trDrag.p : ln.p, ln.color);
     if (this.app.state.drawHide) return out;
     for (const it of this.items) {
       if (it.type === 'avwap') { const r = this._avwap(it); if (r && r.v.length) add(r.v[r.v.length - 1], it.color); continue; }
@@ -334,16 +383,55 @@ export class Drawings {
     return out;
   }
 
+  /** Zeilen der Legende (für Trader-Beschriftungen, damit sie nicht darunter liegen); kurz zwischengespeichert. */
+  _legendRows() {
+    const now = performance.now();
+    if (this._lgc && now - this._lgc.t < 300) return this._lgc.rows;
+    const rows = [];
+    const ce = this.app.ui.chartEl, le = document.getElementById('legend');
+    if (ce && le) {
+      const c = ce.getBoundingClientRect();
+      for (const r of le.querySelectorAll('.lg-row')) {
+        const b = r.getBoundingClientRect();
+        if (b.height > 0) rows.push({ top: b.top - c.top, bottom: b.bottom - c.top, right: b.right - c.left });
+      }
+    }
+    this._lgc = { t: now, rows };
+    return rows;
+  }
+
   // ---------------------------------------------------------------- Zeichnen
   _draw(target) {
-    if (!this.series || this.app.state.drawHide) return;
-    const list = this.pending ? [...this.items, this.pending] : this.items;
-    if (!list.length) return;
+    if (!this.series) return;
+    const trLines = this.app.trader?.lines() || [];
+    const list = this.app.state.drawHide ? [] : (this.pending ? [...this.items, this.pending] : this.items);
+    if (!list.length && !trLines.length) return;
     const th = this.app.theme;
     target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
       const W = bitmapSize.width, H = bitmapSize.height;
       const X = (x) => x * hr, Y = (y) => y * vr;
       const font = (px, w = 500) => `${w} ${Math.round(px * vr)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+      // TQI Trader: Entry / Stop / Ziel (ziehbar), Position, Orders – Beschriftung links wie im ATAS-Chart-Trader,
+      // aber nicht unter der Legende (dann rechts daneben)
+      const lgRows = trLines.length ? this._legendRows() : [];
+      for (const ln of trLines) {
+        const pp = this._trDrag?.id === ln.id ? this._trDrag.p : ln.p;
+        const y0 = this.pToY(pp);
+        if (y0 == null) continue;
+        const yy = Math.round(Y(y0)) + 0.5;
+        ctx.strokeStyle = ln.color; ctx.lineWidth = Math.max(1, ln.width * hr);
+        ctx.setLineDash(ln.dash === 'dashed' ? [6 * hr, 4 * hr] : ln.dash === 'dotted' ? [2 * hr, 3 * hr] : ln.dash === 'sparse' ? [2 * hr, 6 * hr] : []);
+        ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(W, yy); ctx.stroke(); ctx.setLineDash([]);
+        ctx.font = font(10.5, 600);
+        const tw = ctx.measureText(ln.label).width + 14 * hr;
+        let lx = 8;
+        for (const r of lgRows) if (y0 >= r.top - 10 && y0 <= r.bottom + 10) lx = Math.max(lx, r.right + 10);
+        const bx = lx * hr, by = yy - 9 * vr;
+        ctx.fillStyle = ln.color; roundRect(ctx, bx, by, tw + (ln.drag ? 10 * hr : 0), 18 * vr, 3 * hr); ctx.fill();
+        ctx.fillStyle = lightCol(ln.color) ? '#131722' : '#ffffff';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        if (ln.drag) { ctx.fillText('⇕', bx + 4 * hr, yy); ctx.fillText(ln.label, bx + 16 * hr, yy); } else ctx.fillText(ln.label, bx + 7 * hr, yy);
+      }
       for (const it of list) {
         const g = this._geom(it);
         if (g.y1 == null && it.type !== 'vline') continue;
@@ -738,6 +826,12 @@ function bell(ctx, x, y, s, c) {
   ctx.closePath(); ctx.stroke();
   ctx.beginPath(); ctx.arc(x + s * 0.5, y + s * 0.9, s * 0.12, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
+}
+function lightCol(c) {
+  const m = /^#?([0-9a-f]{6})/i.exec(c || '');
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  return (((n >> 16) & 255) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 150;
 }
 function segDist(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;

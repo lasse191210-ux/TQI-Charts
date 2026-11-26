@@ -1,5 +1,5 @@
 // Grundeinstellungen, Coins, Vorlagen und Farbthemen.
-export const APP = { name: 'TQI Charts', version: '1.1.0', key: 'tqi-charts:v1' };
+export const APP = { name: 'TQI Charts', version: '1.2.0', key: 'tqi-charts:v1' };
 
 export const COINS = [
   ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['SOL', 'Solana'], ['XRP', 'XRP'], ['BNB', 'BNB'], ['DOGE', 'Dogecoin'],
@@ -14,16 +14,19 @@ export const COIN_NAME = Object.fromEntries(COINS);
 /** Vorlagen: welche Indikatoren mit welchen Abweichungen von den Standardwerten. */
 export const TEMPLATES = {
   bild: {
-    name: 'Standard (wie mein TradingView)',
-    desc: 'RVWAP 365/90/7 mit Z-Tabelle, VWAP-Bänder, Key Levels (TPO, durchgezogen ab Entstehung), SFP, Options-Level, Big Trades. TPO über den TPO-Knopf.',
+    name: 'Standard (meine Key Levels)',
+    desc: 'TPO, Key Levels, VWAP-Bänder, RVWAP 365/90/7 (Bitstamp), High Volume Bars, Naked POC/UFA/Tails, Institutionelle Level, SFP, Volumen-Kerzen, Big Trades',
     list: [
-      { type: 'rvwap' },
-      { type: 'hvb', visible: false },
-      { type: 'vwap', s: { period: 'day' } },
-      { type: 'tpo', visible: false },
+      { type: 'tpo' },
       { type: 'keylevels' },
+      { type: 'vwap', s: { period: 'day' } },
+      { type: 'rvwap' },
+      { type: 'hvb' },
+      { type: 'htfvwap', s: { w: false, pw: false, m: false, pm: false, q: false, pq: false, y: false, py: false } },
+      { type: 'naked', s: { singles: false } },
+      { type: 'inst' },
       { type: 'sfp' },
-      { type: 'options' },
+      { type: 'volcandles' },
       { type: 'bigtrades' },
     ],
   },
@@ -55,7 +58,7 @@ export const DEFAULT_STATE = {
   tpo: { block: '30m', rowSize: 0, display: 'auto', colors: 'mono', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false },
   theme: 'light', candles: 'auto', tz: 'local', sessionOffsetMin: 0,
   session: { mode: 'utc', start: '02:00', end: '22:00', tz: 'Europe/Berlin' }, vaStep: 2,
-  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0,
+  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0, tplV: 0,
   watchlist: ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE', 'SUI', 'LINK', 'AVAX', 'ADA', 'LTC'],
   favTfs: ['1m', '5m', '15m', '1h', '4h', '1D'],
   rightPanel: 'watch', rightOpen: true,
@@ -64,6 +67,8 @@ export const DEFAULT_STATE = {
   magnet: false, drawLock: false, drawHide: false,
   tapeMin: 0, domStep: 0, legendOpen: true,
   myDefaults: {}, recentColors: [], countdown: true, symLabel: true,
+  chartCol: { up: 'auto', down: 'auto', borderUp: 'auto', borderDown: 'auto', wickUp: 'auto', wickDown: 'auto', borderVis: true, bg: 'auto', grid: 'auto', gridV: true, gridH: true, text: 'auto', crosshair: 'auto', crossStyle: 'large', border: 'auto', priceLine: true },
+  trader: { env: 'demo', risk: 50, lev: 0, type: 'limit', fees: true, slip: 0.05, keepLines: false, lines: true },
 };
 
 export const THEMES = {

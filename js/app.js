@@ -10,12 +10,14 @@ import { TpoPaneView, buildTpoSessions } from './render/tpo.js';
 import { BigTrades } from './bigtrades.js';
 import { OptionsData } from './options.js';
 import { Alerts } from './alerts.js';
+import { Trader } from './trader.js';
 import { buildDayProfiles, autoRowSize, firstTouch } from './calc/profile.js';
 import { heikinAshi } from './calc/std.js';
 import * as U from './util.js';
 import { UI } from './ui.js';
 
 const TPO_BLOCKS = ['5m', '15m', '30m', '1h'];
+const CROSS_STYLE = { solid: LineStyle.Solid, dotted: LineStyle.Dotted, dashed: LineStyle.Dashed, large: LineStyle.LargeDashed };
 const INITIAL_BARS = { '1m': 1500, '3m': 1500, '5m': 1500, '15m': 1500, '30m': 1500, '1h': 1500, '2h': 1200, '4h': 1200, '6h': 1000, '12h': 1000, '1D': 1000, '1W': 400, '1M': 150 };
 
 export class App {
@@ -62,22 +64,41 @@ export class App {
   /** Alte gespeicherte Stände anpassen (neue Farben, Session, Vorlagen). */
   migrate(saved) {
     const st = this.state;
-    if (!saved) { st.colorsV = 2; return; }
+    if (!saved) { st.colorsV = 2; st.tplV = 2; return; }
+    if ((saved.tplV || 0) < 2) {
+      // Standard-Vorlage = Einstellung vom PC (26.11.). War sie aus Versehen in „Nur Key Levels“ (2. Vorlage) gebaut,
+      // wird sie von dort 1:1 in die Standard-Vorlage verschoben und „Nur Key Levels“ wieder auf Werkseinstellung gesetzt.
+      st.tplState ||= {};
+      const KL = new Set(['tpo', 'keylevels', 'sfp']);
+      const custom = (l) => Array.isArray(l) && l.some(x => !KL.has(x.type)) && l.length >= 5;
+      const klList = st.template === 'keylevels' ? st.indicators : st.tplState.keylevels;
+      let list;
+      if (custom(klList)) {
+        list = klList.filter(x => TYPES[x.type]).map(x => ({ ...U.deepClone(x), uid: x.uid || U.uid(), s: U.mergeDefaults(TYPES[x.type].defaults, x.s) }));
+        delete st.tplState.keylevels;
+        if (st.template === 'keylevels') st.template = 'bild';
+      } else {
+        const old = st.template === 'bild' ? st.indicators : (st.tplState.bild || []);
+        list = TEMPLATES.bild.list.map(x => {
+          const prev = (old || []).find(o => o.type === x.type);
+          const s0 = prev ? U.mergeDefaults(TYPES[x.type].defaults, prev.s) : U.mergeDefaults(TYPES[x.type].defaults, st.myDefaults?.[x.type] || {});
+          return { uid: prev?.uid || U.uid(), type: x.type, visible: x.visible !== false, s: Object.assign(s0, x.s || {}), ...(prev?.vis ? { vis: prev.vis } : {}) };
+        });
+      }
+      if (st.template === 'bild') { st.indicators = list; delete st.tplState.bild; }
+      else st.tplState.bild = list;
+      st.tplV = 2;
+    }
     if ((saved.colorsV || 0) < 2) {
       // zweifarbig (Schwarz/Grau, POC pink): Farben der Indikatoren auf die neuen Standardwerte setzen
-      for (const ind of st.indicators || []) {
-        const T = TYPES[ind.type];
+      for (const ind of [st.indicators || [], ...Object.values(st.tplState || {})].flat()) {
+        const T = TYPES[ind?.type];
         if (!T) continue;
         for (const f of T.schema || []) {
           for (const k of [f.t === 'color' ? f.k : null, typeof f.color === 'string' ? f.color : null]) if (k && k in T.defaults) ind.s[k] = T.defaults[k];
         }
         if (ind.type === 'keylevels') ind.s.lines = 'full';
         if (ind.type === 'rvwap' && !ind.s.feed) ind.s.feed = 'bitstamp-spot';
-      }
-      if (st.template === 'bild') {
-        const tpo = st.indicators?.find(x => x.type === 'tpo');
-        if (tpo) tpo.visible = false;
-        if (!st.indicators?.some(x => x.type === 'sfp')) st.indicators?.push({ uid: U.uid(), type: 'sfp', visible: true, s: U.deepClone(TYPES.sfp.defaults) });
       }
       st.tpo = { ...st.tpo, colors: 'mono' };
       st.colorsV = 2;
@@ -87,6 +108,7 @@ export class App {
   // ---------------------------------------------------------------- Start
   async init() {
     this.ui = new UI(this);
+    this.trader = new Trader(this);
     this.ui.build();
     this.createChart();
     this.drawings = new Drawings(this);
@@ -97,6 +119,16 @@ export class App {
     this.hub.on('resync', (store) => { if (store === this.chartStore) this.fullRender(); else this._recompute(); });
     this.ui.renderAll();
     await this.loadSymbol();
+    if (this.trader.open) this.trader.start();
+    // Vorlage per Link (#tpl=TQI1....) übernehmen – beim Öffnen und wenn der Link in der offenen Seite eingefügt wird
+    const tplFromHash = () => {
+      if (!/[#&]tpl=TQI1\./.test(location.hash)) return;
+      const code = location.hash;
+      history.replaceState(null, '', location.pathname + location.search);
+      try { this.ui.openImport(this.parseTemplate(code)); } catch (e) { this.ui.toast(e.message, 'error'); }
+    };
+    tplFromHash();
+    window.addEventListener('hashchange', tplFromHash);
     setInterval(() => this.refreshExt(false), 60000);
     setInterval(() => { this.ui.tickClock(); this.ui.checkPaneLayout(); }, 1000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.onWake(); });
@@ -114,8 +146,18 @@ export class App {
     const base = THEMES[this.state.theme] || THEMES.dark;
     const style = this.state.candles === 'auto' ? (base.dark ? 'tv' : 'sw') : this.state.candles;
     const cs = CANDLE_STYLES[style] || CANDLE_STYLES.tv;
-    const candles = cs.up ? cs : (base.dark ? cs.dark : cs.light);
-    return { ...base, candles };
+    const candles = { ...(cs.up ? cs : (base.dark ? cs.dark : cs.light)) };
+    // eigene Chart-Farben (Einstellungen → Chart, wie ATAS): 'auto' = aus dem Design
+    const o = this.state.chartCol || {};
+    const set = (v) => v && v !== 'auto';
+    for (const k of ['up', 'down', 'borderUp', 'borderDown', 'wickUp', 'wickDown']) if (set(o[k])) candles[k] = U.cssColor(o[k]);
+    const th = { ...base, candles };
+    if (set(o.bg)) th.bg = U.splitColor(o.bg).hex;
+    if (set(o.grid)) th.grid = U.cssColor(o.grid);
+    if (set(o.text)) th.text = U.splitColor(o.text).hex;
+    if (set(o.crosshair)) th.crosshair = U.cssColor(o.crosshair);
+    if (set(o.border)) th.border = U.cssColor(o.border);
+    return th;
   }
   get display() { return this.state.display; }
   get isTpo() { return this.state.chartType === 'tpo'; }
@@ -227,12 +269,12 @@ export class App {
       this.series = this.chart.addSeries(CandlestickSeries, {
         upColor: hollow ? 'rgba(0,0,0,0)' : c.up, downColor: c.down,
         wickUpColor: c.wickUp, wickDownColor: c.wickDown, borderUpColor: c.borderUp, borderDownColor: c.borderDown,
-        borderVisible: true, priceFormat: fmt,
+        borderVisible: this.state.chartCol?.borderVis !== false, priceFormat: fmt,
       });
     }
     // Preislinie gepunktet; weiße Kerzen auf weißem Grund → Linie in Randfarbe
     const sameAsBg = (c.up || '').toLowerCase() === (this.theme.bg || '').toLowerCase();
-    this.series.applyOptions({ lastValueVisible: false, priceLineStyle: LineStyle.Dotted, ...(type !== 'tpo' && sameAsBg ? { priceLineColor: c.borderUp } : {}) });
+    this.series.applyOptions({ lastValueVisible: false, priceLineVisible: this.state.chartCol?.priceLine !== false, priceLineStyle: LineStyle.Dotted, ...(type !== 'tpo' && sameAsBg ? { priceLineColor: c.borderUp } : {}) });
     this.series.attachPrimitive(this.overlay);
     if (this.drawings) this.series.attachPrimitive(this.drawings.prim);
     this.chart.panes()[0]?.setStretchFactor(5);
@@ -245,12 +287,12 @@ export class App {
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', th.dark ? '#141413' : '#ffffff');
     this.chart.applyOptions({
       layout: { background: { type: 'solid', color: th.bg }, textColor: th.text, panes: { separatorColor: th.border } },
-      grid: { vertLines: { color: th.grid }, horzLines: { color: th.grid } },
+      grid: { vertLines: { color: th.grid, visible: this.state.chartCol?.gridV !== false }, horzLines: { color: th.grid, visible: this.state.chartCol?.gridH !== false } },
       rightPriceScale: { borderColor: th.border },
       timeScale: { borderColor: th.border },
       crosshair: {
-        vertLine: { color: th.crosshair, labelBackgroundColor: th.dark ? '#363a45' : '#131722' },
-        horzLine: { color: th.crosshair, labelBackgroundColor: th.dark ? '#363a45' : '#131722' },
+        vertLine: { color: th.crosshair, style: CROSS_STYLE[this.state.chartCol?.crossStyle] ?? LineStyle.LargeDashed, labelBackgroundColor: th.dark ? '#363a45' : '#131722' },
+        horzLine: { color: th.crosshair, style: CROSS_STYLE[this.state.chartCol?.crossStyle] ?? LineStyle.LargeDashed, labelBackgroundColor: th.dark ? '#363a45' : '#131722' },
       },
     });
     this.makeMainSeries();
@@ -284,6 +326,7 @@ export class App {
     this.data.clear();
     this.alerts?.reset();
     this.tpoSel = null;
+    this.trader?.onSymbol();
     for (const uid of [...this.panes.keys()]) this.removePane(uid);
     if (this.chartStoreOff) this.chartStoreOff();
     const st = this.hub.store(mk, base, tf);
@@ -834,6 +877,57 @@ export class App {
     this.applyTemplate(key);
     if (st.tplState) delete st.tplState[key];
   }
+  /** Aktuelle Indikatoren (mit Einstellungen) in eine andere Vorlage kopieren. */
+  copyTemplateTo(target) {
+    const st = this.state;
+    const list = U.deepClone(st.indicators).map(x => ({ ...x, uid: U.uid() }));
+    const user = (st.userTpls || []).find(t => t.id === target);
+    if (user) user.list = U.deepClone(list);
+    st.tplState ||= {};
+    st.tplState[target] = list;
+    this._save();
+  }
+  /** Vorlage als Code (nur Abweichungen von den Standardwerten), z. B. zum Übertragen aufs Handy. */
+  exportTemplate() {
+    const inds = this.state.indicators.filter(x => TYPES[x.type]).map(x => {
+      const D = TYPES[x.type].defaults, d = {};
+      for (const [k, v] of Object.entries(x.s)) if (JSON.stringify(v) !== JSON.stringify(D[k])) d[k] = v;
+      return { t: x.type, v: x.visible ? 1 : 0, ...(Object.keys(d).length ? { s: d } : {}), ...(x.vis ? { vis: x.vis } : {}) };
+    });
+    const obj = { v: 1, n: this.templateName(), c: this.isTpo ? 'tpo' : null, i: inds };
+    const bytes = new TextEncoder().encode(JSON.stringify(obj));
+    let bin = ''; for (const b of bytes) bin += String.fromCharCode(b);
+    return 'TQI1.' + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  shareLink() { return location.origin + location.pathname + '#tpl=' + this.exportTemplate(); }
+  /** Code oder Link → { name, chart, list } */
+  parseTemplate(code) {
+    const m = /TQI1\.([A-Za-z0-9_-]+)/.exec(String(code || ''));
+    if (!m) throw new Error('Kein gültiger Vorlagen-Code');
+    let b = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b.length % 4) b += '=';
+    const bin = atob(b), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const obj = JSON.parse(new TextDecoder().decode(bytes));
+    if (!obj || !Array.isArray(obj.i)) throw new Error('Vorlagen-Code unvollständig');
+    const list = obj.i.filter(x => TYPES[x.t]).map(x => ({ uid: U.uid(), type: x.t, visible: !!x.v, s: U.mergeDefaults(TYPES[x.t].defaults, x.s || {}), ...(x.vis ? { vis: x.vis } : {}) }));
+    return { name: obj.n || 'Importierte Vorlage', chart: obj.c || null, list };
+  }
+  /** Importierte Vorlage übernehmen: in eine bestehende Vorlage (z. B. 'bild') oder als neue eigene Vorlage. */
+  applyImported(imp, target) {
+    const st = this.state;
+    if (target === 'new') {
+      st.userTpls ||= [];
+      const t = { id: 'u' + U.uid(), name: imp.name, list: U.deepClone(imp.list), chart: imp.chart };
+      st.userTpls.push(t);
+      target = t.id;
+    }
+    st.tplState ||= {};
+    if (st.template === target) st.template = null;
+    st.tplState[target] = imp.list;
+    this.applyTemplate(target);
+  }
+
   templateName(key = this.state.template) {
     return (this.state.userTpls || []).find(t => t.id === key)?.name || TEMPLATES[key]?.name || 'Eigene Einstellungen';
   }

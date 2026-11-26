@@ -45,6 +45,11 @@ export class UI {
     $('#setBtn').onclick = () => this.openSettings();
     $('#shotBtn').onclick = () => a.screenshot();
     $('#fullBtn').onclick = () => this.toggleFullscreen();
+    $('#installBtn').innerHTML = `${ICON.install}<span>App installieren</span>`;
+    $('#installBtn').onclick = () => this.installApp();
+    $('#traderBtn').innerHTML = `${ICON.trade}<span>Trader</span>`;
+    $('#traderBtn').onclick = () => this.app.trader?.toggle();
+    this.renderInstall();
     $('#fsExit').innerHTML = ICON.fullExit;
     $('#fsExit').onclick = () => this.toggleFullscreen(false);
     document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && this.full && !this.mobile) this.toggleFullscreen(false); });
@@ -82,6 +87,29 @@ export class UI {
     $('#typeBtn').title = 'Charttyp: ' + (CHART_TYPES.find(x => x[0] === st.chartType)?.[1] || '');
     $('#themeBtn').innerHTML = st.theme === 'dark' ? ICON.sun : ICON.moon;
     $('#themeBtn').title = st.theme === 'dark' ? 'Helles Design (wie TradingView-Bild)' : 'Dunkles Design';
+  }
+  /** „App installieren“ zeigen, wenn der Browser es anbietet (nicht in der installierten App selbst). */
+  get isStandalone() { return matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches || navigator.standalone === true; }
+  renderInstall() {
+    const b = $('#installBtn');
+    if (b) b.hidden = this.isStandalone || !window.__installEvt;
+  }
+  async installApp() {
+    const e = window.__installEvt;
+    if (e) {
+      e.prompt();
+      const r = await e.userChoice.catch(() => null);
+      if (r?.outcome === 'accepted') window.__installEvt = null;
+      this.renderInstall();
+      return;
+    }
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    const body = el(`<div class="setdlg"><div class="info-box">${this.isStandalone ? 'Du nutzt TQI Charts bereits als App.' : ios
+      ? 'iPhone / iPad: in Safari unten auf „Teilen“ tippen → „Zum Home-Bildschirm“.'
+      : 'PC: in Chrome oder Edge oben rechts in der Adressleiste auf das Symbol „App installieren“ klicken (oder Menü ⋮ → „Streamen, speichern und teilen“ → „Seite als App installieren“). Danach startet TQI Charts in einem eigenen Fenster, mit eigenem Symbol im Startmenü und in der Taskleiste.'}</div>
+      <div class="dlg-foot"><div class="grow"></div><button class="tb primary" id="inOk">OK</button></div></div>`);
+    const close = this.modal('Als App installieren', body);
+    $('#inOk', body).onclick = close;
   }
   setStatus(st) {
     const map = { live: ['Live', 'ok'], connecting: ['verbindet …', 'warn'], reconnecting: ['neu verbinden …', 'warn'], off: ['offline', 'off'] };
@@ -464,7 +492,7 @@ export class UI {
   // ================================================================ Rechts: Watchlist / Trades / Orderbuch
   renderRight() {
     const a = this.app, st = a.state;
-    const tabs = [['watch', 'Watchlist', ICON.list], ['tape', 'Trades', ICON.tape], ['dom', 'Orderbuch', ICON.dom]];
+    const tabs = [['watch', 'Watchlist', ICON.list], ['tape', 'Trades', ICON.tape], ['dom', 'Orderbuch', ICON.dom], ['trader', 'TQI Trader', ICON.trade]];
     $('#widgets').innerHTML = tabs.map(([k, l, ic]) => `<button class="wbtn2 ${st.rightOpen && st.rightPanel === k ? 'on' : ''}" data-panel="${k}" title="${l}">${ic}</button>`).join('');
     $$('#widgets [data-panel]').forEach(b => b.onclick = () => {
       const k = b.dataset.panel;
@@ -472,9 +500,12 @@ export class UI {
       else a.setState({ rightOpen: true, rightPanel: k }, { render: false });
       this.renderRight();
       document.body.classList.toggle('right-closed', !a.state.rightOpen);
+      if (k === 'trader' && a.state.rightOpen) a.trader.start();
+      a.trader.redraw();
     });
     const p = st.rightPanel;
     const head = $('#rhead'), body = $('#rbody');
+    $('#traderBtn')?.classList.toggle('on', !!a.trader?.open);
     if (p === 'watch') {
       head.innerHTML = `<b>Watchlist</b><span class="muted">${a.market.label}</span><div class="grow"></div><button class="tb icon" id="wlAdd" title="Symbol hinzufügen">${ICON.plus}</button>`;
       body.innerHTML = `<div class="wl-head"><span>Symbol</span><span>Letzter</span><span>Änd. %</span></div>` + st.watchlist.map(b => `
@@ -495,6 +526,8 @@ export class UI {
       body.innerHTML = `<div class="tp-head"><span>Zeit</span><span>Preis</span><span>Größe $</span></div><div id="tapeList" class="tape"></div>`;
       $('#tapeMin').onchange = (e) => { a.setState({ tapeMin: Math.max(0, +e.target.value || 0) }, { render: false }); this.renderTape(); };
       this.renderTape();
+    } else if (p === 'trader') {
+      a.trader.renderInto(head, body);
     } else if (p === 'dom') {
       head.innerHTML = `<b>Orderbuch</b><span class="muted">${a.market.label}</span><div class="grow"></div><label class="mini">Schritt <select id="domStep">${[0, 0.01, 0.1, 1, 5, 10, 25, 50, 100].map(v => `<option value="${v}" ${+st.domStep === v ? 'selected' : ''}>${v === 0 ? 'auto' : nf(v < 1 ? 2 : 0).format(v)}</option>`).join('')}</select></label>`;
       body.innerHTML = `<div id="domBox" class="dom"><div class="muted pad">${a.market.dom ? 'verbinde …' : 'Für diese Börse gibt es kein öffentliches Orderbuch.'}</div></div>`;
@@ -617,6 +650,9 @@ export class UI {
       <div class="sec-t">Mehr</div>
       <button class="row-btn" data-k="tpl">${ICON.grid}<span>Vorlagen</span></button>
       <button class="row-btn" data-k="alerts">${ICON.alert}<span>Alarme</span><b>${a.alerts.list().filter(x => !x.fired).length || ''}</b></button>
+      <button class="row-btn" data-k="trader">${ICON.trade}<span>TQI Trader</span></button>
+      <button class="row-btn" data-k="chartset">${ICON.candles}<span>Chart-Einstellungen (Farben, Kerzen)</span></button>
+      ${this.isStandalone ? '' : `<button class="row-btn" data-k="install">${ICON.install}<span>Als App installieren</span></button>`}
       <button class="row-btn" data-k="theme">${st.theme === 'dark' ? ICON.sun : ICON.moon}<span>${st.theme === 'dark' ? 'Helles Design' : 'Dunkles Design'}</span></button>
       <button class="row-btn" data-k="shot">${ICON.camera}<span>Screenshot speichern</span></button>
       <button class="row-btn" data-k="set">${ICON.gear}<span>Einstellungen</span></button>
@@ -649,6 +685,9 @@ export class UI {
       close();
       if (k === 'tpl') this.openTemplateSheet();
       if (k === 'alerts') this.openAlerts();
+      if (k === 'trader') a.trader?.toggle(true);
+      if (k === 'chartset') this.openChartSettings();
+      if (k === 'install') this.installApp();
       if (k === 'theme') a.setTheme(st.theme === 'dark' ? 'light' : 'dark');
       if (k === 'shot') a.screenshot();
       if (k === 'set') this.openSettings();
@@ -705,6 +744,9 @@ export class UI {
       ${user.length ? '<div class="msep">Meine Vorlagen</div>' + user.map(t => `<div class="mi tpl ${cur === t.id ? 'on' : ''}" data-tpl="${t.id}"><b>${esc(t.name)}</b><small>${t.list.length} Indikatoren${t.chart === 'tpo' ? ' · TPO-Chart' : ''}</small><button class="tb icon del" data-deltpl="${t.id}" title="Vorlage löschen">${ICON.trash}</button></div>`).join('') : ''}
       <div class="msep">Einstellungen bleiben beim Wechseln erhalten</div>
       <div class="mi act" data-act="save">${ICON.plus}<span>Aktuellen Chart als neue Vorlage speichern …</span></div>
+      <div class="mi act" data-act="copy">${ICON.copy}<span>Diese Indikatoren in eine andere Vorlage kopieren …</span></div>
+      <div class="mi act" data-act="share">${ICON.share}<span>Vorlage teilen / aufs Handy übertragen …</span></div>
+      <div class="mi act" data-act="import">${ICON.download}<span>Vorlage importieren (Code einfügen) …</span></div>
       ${isUser ? `<div class="mi act" data-act="over">${ICON.copy}<span>„${esc(a.templateName())}“ mit aktuellem Stand überschreiben</span></div>` : ''}
       ${cur ? `<div class="mi act" data-act="reset">${ICON.reset}<span>„${esc(a.templateName())}“ auf ${isUser ? 'gespeicherten Stand' : 'Werkseinstellung'} zurücksetzen</span></div>` : ''}
     </div>`);
@@ -716,6 +758,12 @@ export class UI {
         done();
         if (act.dataset.act === 'save') { const n = prompt('Name der Vorlage', 'Meine Vorlage'); if (n != null) { a.saveUserTemplate(n.trim() || 'Meine Vorlage'); this.toast('Vorlage gespeichert: ' + (n.trim() || 'Meine Vorlage'), 'info', 2200); } }
         if (act.dataset.act === 'over') { a.saveUserTemplate(null, cur); this.toast('Vorlage aktualisiert', 'info', 1800); }
+        if (act.dataset.act === 'copy') this.openCopyTemplate();
+        if (act.dataset.act === 'share') this.openShareTemplate();
+        if (act.dataset.act === 'import') {
+          const code = prompt('Vorlagen-Code oder Link einfügen');
+          if (code) { try { this.openImport(a.parseTemplate(code)); } catch (err) { this.toast(err.message, 'error'); } }
+        }
         if (act.dataset.act === 'reset') { if (confirm('Vorlage zurücksetzen? Deine Änderungen in dieser Vorlage gehen verloren.')) { a.resetTemplate(); this.toast('Vorlage zurückgesetzt', 'info', 1800); } }
         return;
       }
@@ -723,6 +771,109 @@ export class UI {
       if (it) { done(); a.applyTemplate(it.dataset.tpl); this.toast('Vorlage: ' + a.templateName(it.dataset.tpl), 'info', 2000); }
     };
     return box;
+  }
+
+  /** Chart-Einstellungen wie in ATAS: Kerzenfarben (Körper, Rand, Docht), Hintergrund, Gitter, Fadenkreuz, Schrift, Preislinie. */
+  openChartSettings() {
+    const a = this.app, st = a.state;
+    const cur = { ...st.chartCol, countdown: st.countdown !== false, symLabel: st.symLabel !== false };
+    const schema = [
+      { sec: 'Kerzen' },
+      { k: 'up', label: 'Körper steigend', t: 'color', auto: true },
+      { k: 'down', label: 'Körper fallend', t: 'color', auto: true },
+      { k: 'borderVis', label: 'Kerzenrand zeichnen', t: 'bool' },
+      { k: 'borderUp', label: 'Rand steigend', t: 'color', auto: true },
+      { k: 'borderDown', label: 'Rand fallend', t: 'color', auto: true },
+      { k: 'wickUp', label: 'Docht steigend', t: 'color', auto: true },
+      { k: 'wickDown', label: 'Docht fallend', t: 'color', auto: true },
+      { sec: 'Hintergrund und Gitter' },
+      { k: 'bg', label: 'Hintergrund', t: 'color', auto: true },
+      { k: 'gridV', label: 'Senkrechte Gitterlinien', t: 'bool' },
+      { k: 'gridH', label: 'Waagerechte Gitterlinien', t: 'bool' },
+      { k: 'grid', label: 'Farbe Gitter', t: 'color', auto: true },
+      { k: 'border', label: 'Farbe Skalenrand', t: 'color', auto: true },
+      { sec: 'Fadenkreuz, Schrift, Preis' },
+      { k: 'crosshair', label: 'Farbe Fadenkreuz', t: 'color', auto: true },
+      { k: 'crossStyle', label: 'Fadenkreuz-Linie', t: 'select', opts: [['large', 'lang gestrichelt'], ['dashed', 'gestrichelt'], ['dotted', 'gepunktet'], ['solid', 'durchgezogen']] },
+      { k: 'text', label: 'Schriftfarbe (Skalen)', t: 'color', auto: true },
+      { k: 'priceLine', label: 'Linie am letzten Preis', t: 'bool' },
+      { k: 'countdown', label: 'Countdown bis Kerzenschluss', t: 'bool' },
+      { k: 'symLabel', label: 'Symbolname am Preis', t: 'bool' },
+    ];
+    const PRESETS = {
+      tv: { up: '#26a69a', down: '#ef5350', borderUp: '#26a69a', borderDown: '#ef5350', wickUp: '#26a69a', wickDown: '#ef5350' },
+      sw: { up: '#ffffff', down: '#131722', borderUp: '#131722', borderDown: '#131722', wickUp: '#131722', wickDown: '#131722' },
+      atas: { up: '#00c78c', down: '#ff4d4d', borderUp: '#00c78c', borderDown: '#ff4d4d', wickUp: '#9aa0a6', wickDown: '#9aa0a6' },
+      hollow: { up: '#00000000', down: '#131722', borderUp: '#131722', borderDown: '#131722', wickUp: '#131722', wickDown: '#131722' },
+    };
+    const body = el(`<div class="setdlg"><div class="tv-presets"><span>Vorlagen:</span><button class="tb" data-pre="tv">Grün / Rot</button><button class="tb" data-pre="atas">ATAS</button><button class="tb" data-pre="sw">Schwarz / Weiß</button><button class="tb" data-pre="hollow">Hohl</button></div>
+      <div class="form" id="csForm">${formHtml(schema, cur)}</div>
+      <div class="dlg-foot"><button class="tb" id="csReset">Alles automatisch (Design)</button><div class="grow"></div><button class="tb primary" id="csOk">Fertig</button></div></div>`);
+    const close = this.modal('Chart-Einstellungen', body);
+    const apply = () => {
+      // „auto“ abgewählt: mit der Farbe weitermachen, die gerade zu sehen ist
+      const th = a.theme;
+      for (const f of schema) if (f.t === 'color' && cur[f.k] === '#888888') {
+        const v = ['up', 'down', 'borderUp', 'borderDown', 'wickUp', 'wickDown'].includes(f.k) ? th.candles[f.k] : th[f.k];
+        if (typeof v === 'string' && v.startsWith('#')) cur[f.k] = v;
+      }
+      const { countdown, symLabel, ...col } = cur;
+      st.chartCol = { ...st.chartCol, ...col };
+      st.countdown = countdown; st.symLabel = symLabel;
+      a._save();
+      a.applyTheme();
+      this.renderAll();
+    };
+    const rerender = () => { $('#csForm', body).innerHTML = formHtml(schema, cur); this.bindForm($('#csForm', body), cur, (imm) => { if (imm) apply(); }, rerender); };
+    this.bindForm($('#csForm', body), cur, (imm) => { if (imm) apply(); }, rerender);
+    $$('[data-pre]', body).forEach(b => b.onclick = () => { Object.assign(cur, PRESETS[b.dataset.pre]); apply(); rerender(); });
+    $('#csReset', body).onclick = () => { for (const f of schema) if (f.t === 'color') cur[f.k] = 'auto'; apply(); rerender(); };
+    $('#csOk', body).onclick = close;
+  }
+
+  /** Indikatoren der aktuellen Vorlage in eine andere kopieren (z. B. versehentlich in die falsche gebaut). */
+  openCopyTemplate() {
+    const a = this.app, st = a.state;
+    const all = [...Object.entries(TEMPLATES).map(([k, t]) => [k, t.name]), ...(st.userTpls || []).map(t => [t.id, t.name])].filter(([k]) => k !== st.template);
+    const body = el(`<div class="setdlg"><div class="info-box">Kopiert alle ${st.indicators.length} Indikatoren mit ihren Einstellungen aus „${esc(a.templateName())}“. Der bisherige Inhalt der Ziel-Vorlage wird ersetzt.</div>
+      <div class="menu wide">${all.map(([k, n]) => `<div class="mi tpl" data-to="${k}"><b>${esc(n)}</b></div>`).join('')}</div></div>`);
+    const close = this.modal('Kopieren nach …', body);
+    body.onclick = (e) => {
+      const it = e.target.closest('[data-to]');
+      if (!it) return;
+      close();
+      a.copyTemplateTo(it.dataset.to);
+      a.applyTemplate(it.dataset.to);
+      this.toast(`Kopiert nach „${a.templateName(it.dataset.to)}“`, 'info', 2500);
+    };
+  }
+  /** Vorlage als Code/Link teilen – auf dem Handy in der App unter Vorlagen → importieren einfügen. */
+  openShareTemplate() {
+    const a = this.app;
+    const code = a.exportTemplate(), link = a.shareLink();
+    const body = el(`<div class="setdlg">
+      <div class="info-box"><b>So kommt die Vorlage aufs Handy:</b><br>1. „Code kopieren“ und dir selbst schicken (z. B. WhatsApp, Discord).<br>2. Auf dem Handy den Code kopieren, TQI Charts öffnen → Vorlagen → „Vorlage importieren“ → einfügen.<br>Der Link öffnet die Vorlage im Browser (die Home-Bildschirm-App auf dem iPhone hat einen eigenen Speicher, dort den Code nehmen).</div>
+      <textarea class="codebox" readonly rows="4">${esc(code)}</textarea>
+      <div class="dlg-foot stack"><button class="tb" id="shCode">${ICON.copy}<span>Code kopieren</span></button><button class="tb" id="shLink">Link kopieren</button>${navigator.share ? '<button class="tb" id="shShare">Teilen …</button>' : ''}<div class="grow"></div><button class="tb primary" id="shOk">Fertig</button></div></div>`);
+    const close = this.modal('Vorlage teilen: ' + a.templateName(), body);
+    const copy = async (txt, what) => {
+      try { await navigator.clipboard.writeText(txt); this.toast(what + ' kopiert', 'info', 1800); }
+      catch { const ta = $('.codebox', body); ta.value = txt; ta.select(); document.execCommand?.('copy'); this.toast(what + ' markiert – kopieren mit Strg+C', 'info', 2500); }
+    };
+    $('#shCode', body).onclick = () => copy(code, 'Code');
+    $('#shLink', body).onclick = () => copy(link, 'Link');
+    $('#shShare', body)?.addEventListener('click', () => navigator.share({ title: 'TQI Charts Vorlage', text: code }).catch(() => {}));
+    $('#shOk', body).onclick = close;
+  }
+  /** Importierte Vorlage: als Standard übernehmen oder als neue Vorlage speichern. */
+  openImport(imp) {
+    const a = this.app;
+    const body = el(`<div class="setdlg"><div class="info-box">„${esc(imp.name)}“ mit ${imp.list.length} Indikatoren: ${esc(imp.list.map(x => TYPES[x.type].name).join(', '))}.</div>
+      <div class="dlg-foot stack"><button class="tb primary" id="imStd">Als „Standard“ übernehmen</button><button class="tb" id="imNew">Als neue Vorlage</button><div class="grow"></div><button class="tb" id="imNo">Abbrechen</button></div></div>`);
+    const close = this.modal('Vorlage importieren', body);
+    $('#imStd', body).onclick = () => { close(); a.applyImported(imp, 'bild'); this.toast('Standard-Vorlage übernommen', 'info', 2200); };
+    $('#imNew', body).onclick = () => { close(); a.applyImported(imp, 'new'); this.toast('Neue Vorlage gespeichert', 'info', 2200); };
+    $('#imNo', body).onclick = close;
   }
 
   // ================================================================ Dialoge
@@ -1017,8 +1168,9 @@ export class UI {
         Aktuelle TPO-Zeile: ${a.fmt(a.rowSize())} · Session: ${esc(a.sess.label())} · Kerzen geladen: ${nf(0).format(a.bars.length)}<br>
         Tipp: Wie ATAS mit deiner Session = „eigene Zeiten“ 02:00–22:00 Berlin. CME-Futures liegen um die Futures-Prämie über Krypto-Spot/Perp.
       </div>
-      <div class="dlg-foot"><button class="tb danger" id="sReset">Alles zurücksetzen</button><div class="grow"></div><button class="tb primary" id="sOk">Fertig</button></div></div>`);
+      <div class="dlg-foot"><button class="tb danger" id="sReset">Alles zurücksetzen</button><button class="tb" id="sChart">${ICON.candles}<span>Chart-Farben &amp; Kerzen …</span></button><div class="grow"></div><button class="tb primary" id="sOk">Fertig</button></div></div>`);
     const close = this.modal('Einstellungen', body);
+    $('#sChart', body).onclick = () => { close(); this.openChartSettings(); };
     this.bindForm($('.form', body), flat, (immediate) => {
       if (!immediate) return;
       const disp = {};
