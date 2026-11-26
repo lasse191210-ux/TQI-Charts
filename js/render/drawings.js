@@ -6,10 +6,10 @@ import { drawProfile } from './vpdraw.js';
 
 export const TOOLS = [
   ['cursor', 'Kreuz'], ['trend', 'Trendlinie'], ['ray', 'Strahl'], ['hline', 'Horizontale Linie'], ['hray', 'Horizontaler Strahl'],
-  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'], ['fvp', 'Fixed Range Volume Profile'],
+  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'], ['fvp', 'Fixed Range Volume Profile'], ['avwap', 'Anchored VWAP'],
   ['text', 'Text'], ['long', 'Long-Position'], ['short', 'Short-Position'],
 ];
-const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short']);
+const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap']);
 const FIB = [[0, '#787b86'], [0.236, '#f23645'], [0.382, '#ff9800'], [0.5, '#4caf50'], [0.618, '#089981'], [0.786, '#00bcd4'], [1, '#787b86'], [1.618, '#2962ff']];
 export const COLORS = ['#2962ff', '#e91e63', '#7c3aed', '#f0a93b', '#26a69a', '#ef5350', '#131722', '#ffffff'];
 
@@ -179,6 +179,7 @@ export class Drawings {
   _create(type, pt) {
     const base = { id: uid(), type, pts: [pt, { ...pt }], color: type === 'long' || type === 'short' ? null : '#2962ff', width: 2 };
     if (type === 'hline' || type === 'hray') base.color = '#7c3aed';
+    if (type === 'avwap') { base.color = '#2962ff'; base.width = 2; base.src = 'hlc3'; base.bands = 1; }
     if (type === 'text') {
       const txt = window.prompt('Text', '');
       if (!txt) { this.setTool('cursor'); return null; }
@@ -205,6 +206,7 @@ export class Drawings {
     const pt = this.pointAt(x, y);
     if (!pt) return;
     const p0 = this.pointAt(d.x0, d.y0);
+    if (it.type === 'avwap') { it.pts[0] = { t: d.handle === 0 ? pt.t : this.lToT(Math.round(this.tToL(d.orig[0].t) + this.tToL(pt.t) - this.tToL(p0.t))), p: pt.p }; this._axisViews = this._buildAxis(); this.requestUpdate?.(); return; }
     if (d.handle === 'stop') it.stop = pt.p;
     else if (d.handle === 'target') it.target = pt.p;
     else if (d.handle === 'right') it.pts[1] = { t: pt.t, p: it.pts[0].p };
@@ -236,7 +238,10 @@ export class Drawings {
       const g = this._geom(it);
       if (g.y1 == null) continue;
       const near = (px, py) => px != null && py != null && Math.hypot(x - px, y - py) < 9;
-      if (this.sel === it && it.type === 'fvp') {
+      if (this.sel === it && it.type === 'avwap') {
+        const r = this._avwap(it);
+        if (r && near(this.tToX(this.app.bars[r.i0].t), this.pToY(r.v[0]))) return { item: it, handle: 0 };
+      } else if (this.sel === it && it.type === 'fvp') {
         const b = this._fvpBox(it);
         const first = it.pts[0].t <= it.pts[1].t ? 0 : 1;
         if (b && near(b.xa, b.yt)) return { item: it, handle: first };
@@ -253,6 +258,17 @@ export class Drawings {
         }
       }
       switch (it.type) {
+        case 'avwap': {
+          const r = this._avwap(it);
+          if (!r) break;
+          const l = Math.round(this.chart.timeScale().coordinateToLogical(x));
+          const j = l - r.i0;
+          if (j < 0 || j >= r.v.length) break;
+          const ys = [r.v[j]];
+          if (r.bands) for (let m = 1; m <= r.bands; m++) ys.push(r.v[j] + m * r.sd[j], r.v[j] - m * r.sd[j]);
+          for (const p of ys) { const py = this.pToY(p); if (py != null && Math.abs(py - y) < 6) return { item: it }; }
+          break;
+        }
         case 'fvp': {
           const b = this._fvpBox(it);
           if (b && x >= b.xa - 4 && x <= b.xb + 4 && y >= b.yt - 4 && y <= b.yb + 4) return { item: it };
@@ -293,6 +309,7 @@ export class Drawings {
     const add = (p, bg) => out.push({ coordinate: () => this.pToY(p) ?? -100, text: () => this.app.fmt(p), textColor: () => '#fff', backColor: () => bg, visible: () => true, tickVisible: () => true });
     if (this.app.state.drawHide) return out;
     for (const it of this.items) {
+      if (it.type === 'avwap') { const r = this._avwap(it); if (r && r.v.length) add(r.v[r.v.length - 1], it.color); continue; }
       if (it.type === 'hline' || it.type === 'hray') add(it.pts[0].p, it.color);
       else if (it === this.sel && it.type === 'fvp') {
         const p = this._fvp(it);
@@ -407,6 +424,46 @@ export class Drawings {
             ctx.fillText(l1, mx, by + 12 * vr); ctx.font = font(11); ctx.fillText(l2, mx, by + 27 * vr);
             break;
           }
+          case 'avwap': {
+            const r = this._avwap(it);
+            if (!r) break;
+            const ts = this.chart.timeScale();
+            const xs = new Array(r.v.length);
+            for (let j = 0; j < r.v.length; j++) { const xx = ts.logicalToCoordinate(r.i0 + j); xs[j] = xx == null ? null : X(xx); }
+            const path = (vals, k) => {
+              ctx.beginPath(); let pen = false;
+              for (let j = 0; j < vals.length; j++) {
+                const v = k ? vals[j] : vals[j];
+                const py = this.pToY(v);
+                if (xs[j] == null || py == null || !Number.isFinite(v)) { pen = false; continue; }
+                if (!pen) { ctx.moveTo(xs[j], Y(py)); pen = true; } else ctx.lineTo(xs[j], Y(py));
+              }
+              ctx.stroke();
+            };
+            // Bänder (Fläche ±1σ, Linien ±1/2/3σ)
+            if (r.bands) {
+              const up1 = r.v.map((v, j) => v + r.sd[j]), dn1 = r.v.map((v, j) => v - r.sd[j]);
+              ctx.fillStyle = rgba(col, 0.07);
+              ctx.beginPath(); let started = false;
+              for (let j = 0; j < up1.length; j++) { const py = this.pToY(up1[j]); if (xs[j] == null || py == null) continue; if (!started) { ctx.moveTo(xs[j], Y(py)); started = true; } else ctx.lineTo(xs[j], Y(py)); }
+              for (let j = dn1.length - 1; j >= 0; j--) { const py = this.pToY(dn1[j]); if (xs[j] == null || py == null) continue; ctx.lineTo(xs[j], Y(py)); }
+              ctx.closePath(); if (started) ctx.fill();
+              ctx.strokeStyle = rgba(col, 0.6); ctx.lineWidth = Math.max(1, hr);
+              for (let m = 1; m <= r.bands; m++) { path(r.v.map((v, j) => v + m * r.sd[j]), 1); path(r.v.map((v, j) => v - m * r.sd[j]), 1); }
+            }
+            ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, (it.width || 2) * hr);
+            path(r.v, 0);
+            // Anker und Name
+            const ax = xs[0], ay = this.pToY(r.v[0]);
+            if (ax != null && ay != null) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(ax, Y(ay), 3.5 * hr, 0, Math.PI * 2); ctx.fill(); }
+            const lj = r.v.length - 1, ly = this.pToY(r.v[lj]);
+            if (xs[lj] != null && ly != null) {
+              ctx.font = font(10.5, 600); ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = col;
+              ctx.fillText('AVWAP', xs[lj] + 8 * hr, Y(ly));
+            }
+            if (ax != null && ay != null) handles.push([ax / hr, ay]);
+            break;
+          }
           case 'fvp': {
             const b = this._fvpBox(it);
             if (!b) break;
@@ -473,6 +530,34 @@ export class Drawings {
     });
   }
 }
+
+// ---------------------------------------------------------------- Anchored VWAP
+/** VWAP ab der Anker-Kerze (Quelle hlc3/ohlc4/close) mit Standardabweichung je Kerze (wie TradingView „Anchored VWAP“). */
+Drawings.prototype._avwap = function (it) {
+  const bars = this.app.bars;
+  if (!bars.length) return null;
+  let i0 = Math.max(0, floorIndex(bars, it.pts[0].t));
+  if (bars[i0] && bars[i0].t < it.pts[0].t && i0 + 1 < bars.length) i0++;
+  const last = bars[bars.length - 1];
+  const key = `${it.pts[0].t}|${bars.length}|${bars[0].t}|${last.c}|${last.v}|${it.src}`;
+  if (it._av && it._av.key === key) return { ...it._av.r, bands: it.bands || 0 };
+  const src = it.src || 'hlc3';
+  const n = bars.length - i0;
+  if (n <= 0) return null;
+  const v = new Float64Array(n), sd = new Float64Array(n);
+  let sv = 0, spv = 0, sp2v = 0;
+  for (let j = 0; j < n; j++) {
+    const b = bars[i0 + j];
+    const p = src === 'close' ? b.c : src === 'ohlc4' ? (b.o + b.h + b.l + b.c) / 4 : (b.h + b.l + b.c) / 3;
+    const w = b.v > 0 ? b.v : 1e-9;
+    sv += w; spv += p * w; sp2v += p * p * w;
+    const m = spv / sv;
+    v[j] = m; sd[j] = Math.sqrt(Math.max(0, sp2v / sv - m * m));
+  }
+  const r = { i0, v, sd };
+  Object.defineProperty(it, '_av', { value: { key, r }, writable: true, configurable: true, enumerable: false });
+  return { ...r, bands: it.bands || 0 };
+};
 
 // ---------------------------------------------------------------- Fixed Range Volume Profile
 Drawings.prototype._fvpSource = function (t0, t1) {

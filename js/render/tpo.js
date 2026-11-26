@@ -254,10 +254,12 @@ export function drawTpoOverlay(ctx, sessions, o, env, blockMs) {
   const labels = [];
   for (const s of sessions) {
     if (!s.rows) continue;
-    const x0 = xOfTime(s.start);
-    if (x0 == null) continue;
-    const fullEnd = x0 + total * cellW;
-    if (fullEnd < 0 || x0 > W) continue;
+    const xs = xOfTime(s.start);
+    if (xs == null) continue;
+    const fullEnd = xs + total * cellW;
+    if (fullEnd < 0 || xs > W) continue;
+    // Session-Beginn links aus dem Bild gescrollt: Profil am linken Rand festhalten (Spalten haben keine Zeitbedeutung)
+    const x0 = o.sticky !== false && xs < 2 * hr && fullEnd > 40 * hr ? 2 * hr : xs;
     const rs = s.rowSize;
     const rowTop = (r) => yOf((s.rowLo + r + 1) * rs), rowBot = (r) => yOf((s.rowLo + r) * rs);
     const y0 = rowTop(s.rows.length - 1), y1 = rowBot(0);
@@ -278,30 +280,44 @@ export function drawTpoOverlay(ctx, sessions, o, env, blockMs) {
       for (const [a, b] of s.singles) { const ya = rowTop(b), yb = rowBot(a); ctx.fillRect(x0, ya, Math.max(cellW, 3 * hr), yb - ya); }
     }
     // TPOs
+    const monoCol = !o.mono || o.mono === 'auto' ? (dark ? '#d1d4dc' : '#131722') : o.mono;
     ctx.globalAlpha = o.opacity;
     if (letters) {
-      const fs = Math.max(7 * vr, Math.min(rowH * 0.9, cellW * 1.1, 14 * vr));
-      ctx.font = `600 ${Math.round(fs)}px ${fontFam}`;
+      // Buchstaben: zu dünne Zeilen zusammenfassen (Buchstaben bleiben lesbar), Perioden je Gruppe vereinigt
+      const minPx = 10 * vr;
+      const k = rowH >= minPx ? 1 : Math.ceil(minPx / Math.max(rowH, 0.01));
+      const g0 = Math.floor(s.rowLo / k), g1 = Math.floor((s.rowLo + s.rows.length - 1) / k);
+      const fs = Math.max(7 * vr, Math.min(rowH * k * 0.86, cellW * 1.05, 13 * vr));
+      const fN = `600 ${Math.round(fs)}px ${fontFam}`, fB = `800 ${Math.round(fs)}px ${fontFam}`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    }
-    for (let r = 0; r < s.rows.length; r++) {
-      const list = s.rows[r];
-      if (!list.length) continue;
-      const yt = rowTop(r), yb = rowBot(r);
-      if (yb < -10 || yt > H + 10) continue;
-      const h = Math.max(1, yb - yt);
-      const isPoc = o.poc && r === s.pocRow;
-      if (letters) {
-        const yc = yt + h / 2;
-        for (let k = 0; k < list.length; k++) {
-          ctx.fillStyle = isPoc ? o.pocColor : (o.colors === 'mono' ? o.mono : periodColor(list[k], total, 'gradient', dark));
-          ctx.fillText(letterOf(list[k]), x0 + (k + 0.5) * cellW, yc);
+      for (let g = g0; g <= g1; g++) {
+        const rA = Math.max(0, g * k - s.rowLo), rB = Math.min(s.rows.length - 1, (g + 1) * k - 1 - s.rowLo);
+        let list;
+        if (k === 1) list = s.rows[rA];
+        else { const set = new Set(); for (let r = rA; r <= rB; r++) for (const q of s.rows[r]) set.add(q); list = [...set].sort((x, y) => x - y); }
+        if (!list || !list.length) continue;
+        const yt = yOf((g + 1) * k * rs), yb = yOf(g * k * rs);
+        if (yt == null || yb == null || yb < -10 || yt > H + 10) continue;
+        const yc = yt + (yb - yt) / 2;
+        const isPoc = o.poc && s.pocRow >= rA && s.pocRow <= rB;
+        ctx.font = isPoc ? fB : fN;
+        for (let j = 0; j < list.length; j++) {
+          ctx.fillStyle = o.colors === 'mono' ? monoCol : periodColor(list[j], total, 'gradient', dark);
+          ctx.fillText(letterOf(list[j]), x0 + (j + 0.5) * cellW, yc);
         }
-      } else {
+      }
+    } else {
+      for (let r = 0; r < s.rows.length; r++) {
+        const list = s.rows[r];
+        if (!list.length) continue;
+        const yt = rowTop(r), yb = rowBot(r);
+        if (yb < -10 || yt > H + 10) continue;
+        const h = Math.max(1, yb - yt);
+        const isPoc = o.poc && r === s.pocRow;
         const gap = h > 3 * vr ? Math.max(1, Math.round(0.6 * vr)) : 0;
         const wgap = cellW > 4 * hr ? Math.max(1, Math.round(0.6 * hr)) : 0;
         if (o.colors === 'mono' || cellW < 2 * hr) {
-          ctx.fillStyle = isPoc ? o.pocColor : o.mono;
+          ctx.fillStyle = isPoc ? o.pocColor : monoCol;
           ctx.fillRect(x0, yt + gap / 2, list.length * cellW - wgap, h - gap);
         } else {
           for (let k = 0; k < list.length; k++) {

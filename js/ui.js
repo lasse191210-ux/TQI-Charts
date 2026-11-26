@@ -115,7 +115,7 @@ export class UI {
   renderTools() {
     const a = this.app, st = a.state;
     const tool = a.drawings?.tool || 'cursor';
-    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['rect', 'fib', 'measure', 'fvp', 'text'], ['long', 'short']];
+    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['avwap', 'fvp', 'rect', 'fib', 'measure', 'text'], ['long', 'short']];
     let html = groups.map(g => g.map(t => `<button class="tool ${t === tool ? 'on' : ''}" data-tool="${t}" title="${TOOLS.find(x => x[0] === t)[1]}">${ICON[TOOL_ICON[t]]}</button>`).join('')).join('<div class="tsep"></div>');
     html += '<div class="tsep"></div>';
     html += `<button class="tool ${st.magnet ? 'on' : ''}" data-tt="magnet" title="Magnet (an Kerzen einrasten)">${ICON.magnet}</button>`;
@@ -145,12 +145,15 @@ export class UI {
     bar.innerHTML = (isPos ? '' : COLORS.map(c => `<button class="sw ${sel.color === c ? 'on' : ''}" data-c="${c}" style="--c:${c}"></button>`).join('') + '<span class="vsep"></span>' +
       [1, 2, 3].map(w => `<button class="wbtn ${sel.width === w ? 'on' : ''}" data-w="${w}"><i style="height:${w}px"></i></button>`).join('')) +
       (sel.type === 'fib' ? `<button class="tb ${sel.ext ? 'on' : ''}" data-ext="1" title="nach rechts verlängern">→</button>` : '') +
+      (sel.type === 'avwap' ? `<span class="vsep"></span><button class="tb" data-bands="1" title="Bänder: aus / ±1σ / ±1σ ±2σ / ±1σ ±2σ ±3σ">σ ${['aus', '1', '1 2', '1 2 3'][sel.bands || 0]}</button><button class="tb" data-src="1" title="Quelle">${(sel.src || 'hlc3').toUpperCase()}</button>` : '') +
       `<span class="vsep"></span><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
     bar.classList.add('on');
     const d = this.app.drawings;
     $$('[data-c]', bar).forEach(b => b.onclick = () => { sel.color = b.dataset.c; d._changed(); });
     $$('[data-w]', bar).forEach(b => b.onclick = () => { sel.width = +b.dataset.w; d._changed(); });
     $('[data-ext]', bar)?.addEventListener('click', () => { sel.ext = !sel.ext; d._changed(); });
+    $('[data-bands]', bar)?.addEventListener('click', () => { sel.bands = ((sel.bands || 0) + 1) % 4; d._changed(); });
+    $('[data-src]', bar)?.addEventListener('click', () => { const l = ['hlc3', 'ohlc4', 'close']; sel.src = l[(l.indexOf(sel.src || 'hlc3') + 1) % l.length]; d._changed(); });
     $('[data-del]', bar).onclick = () => d.remove(sel);
   }
 

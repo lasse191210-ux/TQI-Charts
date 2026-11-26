@@ -213,7 +213,31 @@ FAKE_WS = """
         }, 250);
       }
     }
-    send() {}
+    send(raw) {
+      // Deribit JSON-RPC (Options-Level): synthetische Optionskette um den aktuellen Kurs
+      if (!this.url.includes('deribit')) return;
+      let m; try { m = JSON.parse(raw); } catch { return; }
+      const reply = (result) => setTimeout(() => this._emit({ jsonrpc: '2.0', id: m.id, result }), 60);
+      if (m.method === 'public/get_index_price') return reply({ index_price: px, estimated_delivery_price: px });
+      if (m.method === 'public/get_book_summary_by_currency') {
+        const MON = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+        const now = Date.now(), out = [];
+        for (const days of [1, 2, 7, 30, 90]) {
+          const d = new Date(now + days * 864e5);
+          const code = d.getUTCDate() + MON[d.getUTCMonth()] + String(d.getUTCFullYear()).slice(2);
+          const base = Math.round(px / 1000) * 1000;
+          for (let k = base - 25000; k <= base + 25000; k += 1000) {
+            for (const cp of ['C', 'P']) {
+              const dist = (k - px) / px;
+              const oi = Math.max(5, (cp === 'C' ? (dist > 0 ? 400 : 120) : (dist < 0 ? 380 : 100)) * Math.exp(-Math.abs(dist) * 8) * (days === 7 ? 2.2 : days === 30 ? 3 : 1) * (k % 5000 === 0 ? 2.5 : 1));
+              out.push({ instrument_name: `BTC-${code}-${k}-${cp}`, open_interest: oi, mark_iv: 48 + Math.abs(dist) * 60, underlying_price: px, mark_price: 0.01, volume: 10 });
+            }
+          }
+        }
+        return reply(out);
+      }
+      if (m.id) reply({});
+    }
     close() { this.readyState = 3; clearInterval(this._t); clearInterval(this._d); this.onclose && this.onclose({}); }
   }
   FakeWS.OPEN = 1;

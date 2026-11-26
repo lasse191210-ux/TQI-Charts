@@ -8,6 +8,7 @@ import { OverlayPrimitive, Scene } from './render/overlay.js';
 import { Drawings } from './render/drawings.js';
 import { TpoPaneView, buildTpoSessions } from './render/tpo.js';
 import { BigTrades } from './bigtrades.js';
+import { OptionsData } from './options.js';
 import { buildDayProfiles, autoRowSize, firstTouch } from './calc/profile.js';
 import { heikinAshi } from './calc/std.js';
 import * as U from './util.js';
@@ -24,6 +25,8 @@ export class App {
     if (saved && Array.isArray(saved.indicators)) this.state.indicators = saved.indicators.filter(x => TYPES[x.type]).map(x => ({ ...x, s: U.mergeDefaults(TYPES[x.type].defaults, x.s) }));
     if (!Array.isArray(this.state.indicators)) this.state.indicators = this.templateIndicators(this.state.template || 'bild');
     if (!MARKETS[this.state.market]) this.state.market = DEFAULT_STATE.market;
+    // Handy: Legende anfangs eingeklappt (übersichtlich wie die TradingView-App)
+    if (!saved && matchMedia('(max-width: 760px)').matches) this.state.legendOpen = false;
     this.hub = new DataHub();
     this.bars = [];
     this.view = [];             // angezeigte Kerzen (z. B. Heikin Ashi)
@@ -42,6 +45,8 @@ export class App {
     this._live = U.frameThrottle(() => this.liveUpdate(), 60);
     // Countdown bis Kerzenschluss am Preislabel
     setInterval(() => { if (document.visibilityState === 'visible') this.overlay?.requestUpdate?.(); }, 1000);
+    this.opt = new OptionsData();
+    this.opt.on('change', () => this._recompute());
     this.bt = new BigTrades();
     this.bt.on('change', () => this._recompute());
     setInterval(() => this.bt.save(), 30000);
@@ -365,6 +370,7 @@ export class App {
       bigTrades: (min) => this.bt.active ? this.bt.orders(min > 0 ? min : this.autoBigUsd()) : [],
       autoBig: () => this.autoBigUsd(),
       btInfo: () => this.bt.info(),
+      options: (cur, maxAge) => this.opt.get(cur, maxAge),
       liqs: () => this.liqList,
     };
   }

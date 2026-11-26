@@ -9,7 +9,7 @@ Krypto-Charts im Browser, aufgebaut wie DM Charts / TradingView – mit den eige
 - **Charts:** TradingView Lightweight Charts™ 5.3 (lokal eingebunden), Kerzen, hohle Kerzen, Balken, Linie, Fläche, Heikin Ashi, eigener TPO-Chart, Zeiteinheiten 1m bis 1M, Historie lädt beim Zurückscrollen nach, Log-/Prozent-Skala, Zeitzone lokal oder UTC, Countdown bis Kerzenschluss am Preis, Vollbild-Chart
 - **Börsen:** Binance Perp + Spot, Bybit Perp + Spot, OKX Perp, Coinbase Spot – öffentliche Schnittstellen, live über WebSocket
 - **Meine Indikatoren (TQI)**
-  - TPO (Market Profile) direkt im Kerzenchart: Buchstaben/Blöcke, POC, VAH/VAL, Initial Balance, Single Prints (Knopf „TPO“)
+  - TPO (Market Profile) direkt im Kerzenchart als schwarze Buchstaben (oder Blöcke/Farbverlauf), POC, VAH/VAL, Initial Balance, Single Prints (Knopf „TPO“)
   - Key Levels: nPOC, Tails, Single Prints, VAH/VAL/POC von Vortag (TPO), Vorwoche, Vorquartal, Vorjahr, 52-Wochen-Tief/-Hoch
   - Volume Profile je Tag/Woche/Monat oder sichtbarer Bereich (Volumen, Kauf/Verkauf, Delta) und Fixed-Range-Werkzeug
   - VWAP mit VAH/VAL (±1σ) und Bändern 2–4, Tag/Woche/Monat/Quartal/Jahr, Vorperiode, jedes Band eigene Farbe, Namen an/aus
@@ -19,11 +19,12 @@ Krypto-Charts im Browser, aufgebaut wie DM Charts / TradingView – mit den eige
   - Value Areas pd/3d/7d/pw/2w/pm, Composites 28/56 Tage, Composite mit Datum, Vortage einzeln
   - Naked POC, Naked UFA, Single Prints, Tails (30-Min-TPO), berührte Level schließen nach Session-Ende
   - SFP, institutionelle Level (52w, pw/pm/pd H/L, do/wo/mo/qo/yo, 200/50-Tage-Durchschnitt), Volumen-Kerzen
+- **Options-Level (Deribit, BTC/ETH):** Call Resistance, Put Support, HVL (Gamma-Flip), Max Pain, erwartete Spanne 1T/1W, Call/Put Wall, GEX 1–10, 0DTE, Major Wall – gleiche Rechnung wie im TQI Terminal
 - **Orderflow:** Big Trades (Marktorders mit gleicher Zeit + Seite zusammengefasst, live und rückwirkend per REST nachgeladen, 48 Std. im Browser gespeichert), Volumen nach Delta, CVD, Open Interest, Funding, Liquidationen, Trades-Tape, Orderbuch (DOM), Watchlist
 - **Standard:** EMA/SMA, Bollinger, RSI, MACD, ATR
-- **Zeichnen:** Trendlinie, Strahl, horizontale Linie/Strahl, vertikale Linie, Rechteck, Fibonacci, Preisspanne, Fixed Range Volume Profile, Text, Long-/Short-Position, Magnet, sperren, ausblenden
+- **Zeichnen:** Trendlinie, Strahl, horizontale Linie/Strahl, vertikale Linie, Rechteck, Fibonacci, Preisspanne, Anchored VWAP (mit ±1/2/3σ-Bändern, Quelle HLC3/OHLC4/Close), Fixed Range Volume Profile, Text, Long-/Short-Position, Magnet, sperren, ausblenden
 - **Einstellungen wie TradingView:** Reiter Eingaben / Stil / Sichtbarkeit, Farbwähler mit Palette und Deckkraft, Linienbreite, eigene Standardwerte speichern
-- **Vorlagen:** „Wie mein TradingView“ (Standard: RVWAP, VWAP-Bänder, HVB, TPO, Key Levels, Big Trades), Orderflow, Nur TPO + Key Levels, Alles, Nur Kerzen
+- **Vorlagen:** Standard (RVWAP, VWAP-Bänder, HVB, TPO, Key Levels und Options-Level als kurze Marken rechts, Big Trades), Nur TPO + Key Levels, Orderflow, Nur Kerzen
 - Dunkel und hell, Handy-Ansicht wie die TradingView-App, Screenshot, als App auf den Home-Bildschirm legbar
 
 Einstellungen, Indikatoren, Zeichnungen und Watchlist werden nur im eigenen Browser gespeichert (localStorage).

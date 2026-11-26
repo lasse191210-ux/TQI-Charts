@@ -581,7 +581,7 @@ const TPO_BLOCK_OPTS = [['5m', '5 Minuten'], ['15m', '15 Minuten'], ['30m', '30 
 const tpoInd = {
   type: 'tpo', name: 'TPO (Market Profile)', cat: 'tqi', pane: 'main',
   desc: 'Market Profile je Tag direkt im Kerzenchart (TPO und Kerzen zusammen): Buchstaben oder Blöcke, POC, Value Area, Initial Balance, Single Prints.',
-  defaults: { block: '30m', rows: 0, vaPct: 68, ibMin: 60, count: 3, display: 'auto', colors: 'gradient', mono: '#9598a1', opacity: 0.42, width: 1, poc: true, pocColor: '#e91e63', va: true, vaColor: '#7c3aed', vaFill: true, vaFillColor: '#7c3aed', vaFillOpacity: 0.05, lines: 'profile', names: true, axis: true, ib: true, ibColor: '#2962ff', singles: true, singleColor: '#f0a93b' },
+  defaults: { block: '30m', rows: 0, vaPct: 68, ibMin: 60, count: 2, display: 'letters', colors: 'mono', mono: 'auto', opacity: 0.8, width: 1, poc: true, pocColor: '#e91e63', va: true, vaColor: '#7c3aed', vaFill: false, vaFillColor: '#7c3aed', vaFillOpacity: 0.05, lines: 'profile', names: true, axis: true, ib: false, ibColor: '#2962ff', singles: false, singleColor: '#f0a93b' },
   schema: [
     { sec: 'Profil' },
     { k: 'block', label: 'Zeit pro Buchstabe (TPO-Periode)', t: 'select', opts: TPO_BLOCK_OPTS },
@@ -590,9 +590,9 @@ const tpoInd = {
     { k: 'ibMin', label: 'Initial Balance (Minuten)', t: 'int', min: 5, max: 480 },
     { k: 'count', label: 'Anzahl Tage', t: 'int', min: 1, max: 30 },
     { sec: 'TPOs', tab: 'style' },
-    { k: 'display', label: 'TPOs als', t: 'select', opts: [['auto', 'automatisch (Buchstaben beim Reinzoomen)'], ['letters', 'Buchstaben'], ['blocks', 'Blöcke']] },
-    { k: 'colors', label: 'Farben', t: 'select', opts: [['gradient', 'Verlauf über den Tag'], ['mono', 'einfarbig']] },
-    { k: 'mono', label: 'Farbe (einfarbig)', t: 'color' },
+    { k: 'display', label: 'TPOs als', t: 'select', opts: [['letters', 'Buchstaben'], ['blocks', 'Blöcke'], ['auto', 'automatisch (Buchstaben beim Reinzoomen)']] },
+    { k: 'colors', label: 'Farben', t: 'select', opts: [['mono', 'einfarbig (schwarz)'], ['gradient', 'Verlauf über den Tag']] },
+    { k: 'mono', label: 'Farbe der Buchstaben (auto = schwarz bzw. hell im dunklen Design)', t: 'color', auto: true },
     { k: 'opacity', label: 'Deckkraft TPOs', t: 'num', min: 0.05, max: 1, step: 0.05 },
     { sec: 'Linien', tab: 'style' },
     { k: 'poc', label: 'POC', t: 'bool', color: 'pocColor' },
@@ -634,6 +634,15 @@ const tpoInd = {
   },
 };
 
+// Level zeichnen: 'short' = kurze Marke rechts (übersichtlich), sonst ab Entstehung bis zum Rand
+function drawLevel(sc, c, s, o) {
+  const last = c.bars.length - 1;
+  if (s.lines === 'short' && last >= 0) {
+    const n = Math.min(18, last);
+    sc.level({ ...o, from: c.bars[last - n].t, ext: n + 3 });
+  } else sc.level(o);
+}
+
 // ============================================================================ TQI: Key Levels (nur das Wichtige)
 /** VAH / VAL / POC über eine Zeitspanne: jede Kerze = eine TPO-Periode. */
 function rangeLevels(bars, t0, t1, { rs, basis, pct }) {
@@ -660,7 +669,7 @@ const keylevels = {
   defaults: {
     basis: 'tpo', pct: 68, npoc: true, tails: true, singles: true, minSingle: 3, minTail: 2, lookback: 20,
     pd: true, pw: true, pq: true, py: true, w52l: true, w52h: false,
-    names: true, axis: false, width: 1, pocDash: true,
+    names: true, axis: false, width: 1, pocDash: true, lines: 'short',
     pdColor: '#7c3aed', pwColor: '#2962ff', pqColor: '#e67e22', pyColor: '#00897b', npocColor: '#dc2828', w52Color: '#089981',
     singleColor: '#f0a93b', sellTail: '#ef5350', buyTail: '#26a69a', boxOpacity: 0.16,
   },
@@ -682,6 +691,7 @@ const keylevels = {
     { k: 'minSingle', label: 'Single Prints: min. Zeilen', t: 'int', min: 1, max: 100 },
     { k: 'minTail', label: 'Tails: min. Zeilen', t: 'int', min: 1, max: 100 },
     { sec: 'Stil', tab: 'style' },
+    { k: 'lines', label: 'Linien', t: 'select', opts: [['short', 'kurz rechts (übersichtlich)'], ['full', 'ab Entstehung bis zum Rand']] },
     { k: 'width', label: 'Linienbreite', t: 'width' },
     { k: 'pocDash', label: 'POC gestrichelt', t: 'bool' },
     { k: 'names', label: 'Namen an den Linien (pdVAH, nPOC …)', t: 'bool' },
@@ -752,21 +762,95 @@ const keylevels = {
   draw(s, d, sc, c) {
     for (const L of d.lines) {
       const col = s[L.tag + 'Color'];
-      sc.level({ p: L.vah, from: L.from, color: col, width: s.width, label: s.names ? L.tag + 'VAH' : null, lc: col });
-      sc.level({ p: L.val, from: L.from, color: col, width: s.width, label: s.names ? L.tag + 'VAL' : null, lc: col });
-      sc.level({ p: L.poc, from: L.from, color: col, width: s.width, dash: s.pocDash ? 'dashed' : null, label: s.names ? L.tag + 'POC' : null, lc: col });
+      drawLevel(sc, c, s, { p: L.vah, from: L.from, color: col, width: s.width, label: s.names ? L.tag + 'VAH' : null, lc: col });
+      drawLevel(sc, c, s, { p: L.val, from: L.from, color: col, width: s.width, label: s.names ? L.tag + 'VAL' : null, lc: col });
+      drawLevel(sc, c, s, { p: L.poc, from: L.from, color: col, width: s.width, dash: s.pocDash ? 'dashed' : null, label: s.names ? L.tag + 'POC' : null, lc: col });
       if (s.axis) for (const p of [L.vah, L.val, L.poc]) sc.axisLabel(p, null, col, '#fff');
     }
     if (d.w52) {
       for (const [on, x, nm] of [[s.w52l, d.w52.lo, '52W Low'], [s.w52h, d.w52.hi, '52W High']]) {
         if (!on || !Number.isFinite(x.p)) continue;
-        sc.level({ p: x.p, from: x.t, color: s.w52Color, width: s.width + 1, label: s.names ? nm : null, lc: s.w52Color });
+        drawLevel(sc, c, s, { p: x.p, from: x.t, color: s.w52Color, width: s.width + 1, label: s.names ? nm : null, lc: s.w52Color });
         if (s.axis) sc.axisLabel(x.p, null, s.w52Color, '#fff');
       }
     }
     if (d.naked) {
-      const items = s.names ? d.naked.items : d.naked.items.map(x => ({ ...x, label: null }));
-      naked.draw(this.nakedS(s), { items }, sc, c);
+      let items = s.names ? d.naked.items : d.naked.items.map(x => ({ ...x, label: null }));
+      if (s.lines === 'short') {
+        // nur offene Level, als kurze Marken bzw. kurze Zonen rechts
+        const last = c.bars.length - 1, n = Math.min(18, last);
+        items = items.filter(x => x.st !== 'closed');
+        for (const x of items) {
+          const col = x.kind === 'poc' ? s.npocColor : x.kind === 'single' ? s.singleColor : x.kind === 'sellTail' ? s.sellTail : s.buyTail;
+          const dash = x.st === 'touched' ? 'dashed' : null;
+          if (x.kind === 'poc') sc.level({ p: x.p, from: c.bars[last - n].t, ext: n + 3, color: col, dash, width: s.width, label: x.label, lc: col });
+          else sc.box({ from: c.bars[last - n].t, ext: n + 3, top: x.top, bottom: x.bottom, fill: rgba(col, s.boxOpacity), stroke: dash ? rgba(col, 0.7) : null, dash: 'dashed', label: x.label, lc: col });
+        }
+      } else naked.draw(this.nakedS(s), { items }, sc, c);
+    }
+  },
+};
+
+// ============================================================================ Orderflow: Options-Level (Deribit)
+const optionsInd = {
+  type: 'options', name: 'Options-Level (Deribit)', cat: 'of', pane: 'main',
+  desc: 'Level aus dem Options-Open-Interest von Deribit, gleiche Rechnung wie im TQI Terminal: Call Resistance, Put Support, HVL (Gamma-Flip), Max Pain, erwartete Spanne, Call/Put Wall, GEX 1–10, 0DTE und Major Wall. Nur BTC und ETH.',
+  defaults: {
+    cr: true, ps: true, hvl: true, maxPain: true, em1d: true, em1w: false, walls: false, gex: false, gexN: 5, odte: false, major: false,
+    offset: 'auto', lines: 'short', names: true, axis: true, width: 1, refresh: 60,
+    crColor: '#089981', psColor: '#f23645', hvlColor: '#ff9800', mpColor: '#787b86', emColor: '#7c3aed', wallColor: '#00897b', gexColor: '#2962ff', odteColor: '#00bcd4', majorColor: '#e91e63',
+  },
+  schema: [
+    { sec: 'Level' },
+    { k: 'cr', label: 'Call Resistance (Decke)', t: 'bool', color: 'crColor' },
+    { k: 'ps', label: 'Put Support (Boden)', t: 'bool', color: 'psColor' },
+    { k: 'hvl', label: 'HVL (Gamma-Flip)', t: 'bool', color: 'hvlColor' },
+    { k: 'maxPain', label: 'Max Pain (nächster Verfall)', t: 'bool', color: 'mpColor' },
+    { k: 'em1d', label: 'Erwartete Spanne 1 Tag (1σ)', t: 'bool', color: 'emColor' },
+    { k: 'em1w', label: 'Erwartete Spanne 1 Woche (1σ)', t: 'bool' },
+    { k: 'walls', label: 'Call Wall / Put Wall', t: 'bool', color: 'wallColor' },
+    { k: 'gex', label: 'GEX 1–10 (Reaktionszonen)', t: 'bool', color: 'gexColor' },
+    { k: 'gexN', label: 'Anzahl GEX-Level', t: 'int', min: 1, max: 10 },
+    { k: 'odte', label: '0DTE: Decke, Boden, Flip, Gamma Wall', t: 'bool', color: 'odteColor' },
+    { k: 'major', label: 'Major Wall (meistes Gamma)', t: 'bool', color: 'majorColor' },
+    { sec: 'Daten' },
+    { k: 'offset', label: 'Preis-Anpassung an den Chart', t: 'select', opts: [['auto', 'automatisch (Abstand Chart ↔ Deribit-Index)'], ['none', 'keine (Strikes wie bei Deribit)']] },
+    { k: 'refresh', label: 'Aktualisieren alle (Sekunden)', t: 'int', min: 15, max: 3600 },
+    { sec: 'Stil', tab: 'style' },
+    { k: 'lines', label: 'Linien', t: 'select', opts: [['short', 'kurz rechts (übersichtlich)'], ['full', 'über den ganzen Chart']] },
+    { k: 'width', label: 'Linienbreite', t: 'width' },
+    { k: 'names', label: 'Namen an den Linien', t: 'bool' },
+    { k: 'axis', label: 'Preis-Labels auf der Preisskala', t: 'bool' },
+  ],
+  title(s) { return 'Options-Level ' + [['cr', 'CR'], ['ps', 'PS'], ['hvl', 'HVL'], ['maxPain', 'MaxPain'], ['em1d', '1D'], ['walls', 'Walls'], ['gex', 'GEX'], ['odte', '0DTE']].filter(([k]) => s[k]).map(([, l]) => l).join(' '); },
+  needs() { return []; },
+  compute(s, c) {
+    const cur = ['BTC', 'ETH'].includes(c.base) ? c.base : null;
+    if (!cur) return { lv: [], note: 'nur BTC und ETH (Deribit)' };
+    const e = c.options(cur, s.refresh * 1000);
+    const m = e?.m;
+    if (!m) return { lv: [], note: e?.err ? 'Deribit: ' + e.err : 'lädt Deribit-Optionen …' };
+    const last = c.bars[c.bars.length - 1];
+    const off = s.offset === 'auto' && last ? last.c - m.S0 : 0;
+    const lv = [];
+    const add = (on, p, name, color, dash, w) => { if (on && Number.isFinite(p)) lv.push({ p: p + off, name, color, dash, w }); };
+    add(s.cr, m.cr, 'Call Resistance', s.crColor, null, 2);
+    add(s.ps, m.ps, 'Put Support', s.psColor, null, 2);
+    add(s.hvl, m.hvl, 'HVL', s.hvlColor, 'dashed', 1);
+    add(s.maxPain, m.maxPain, 'Max Pain', s.mpColor, 'dashed', 1);
+    add(s.em1d, m.dMax, '1D Max', s.emColor, 'dotted', 1); add(s.em1d, m.dMin, '1D Min', s.emColor, 'dotted', 1);
+    add(s.em1w, m.wMax, '1W Max', s.emColor, 'dotted', 1); add(s.em1w, m.wMin, '1W Min', s.emColor, 'dotted', 1);
+    add(s.walls, m.callWall, 'Call Wall', s.wallColor, null, 1); add(s.walls, m.putWall, 'Put Wall', s.wallColor, null, 1);
+    add(s.major, m.major, 'Major Wall', s.majorColor, null, 3);
+    if (s.odte) { add(true, m.cr0, '0DTE Decke', s.odteColor, 'dashed', 1); add(true, m.ps0, '0DTE Boden', s.odteColor, 'dashed', 1); add(true, m.hvl0, '0DTE Flip', s.odteColor, 'dotted', 1); add(true, m.gw0, '0DTE Gamma Wall', s.odteColor, null, 1); }
+    if (s.gex) for (const g of m.gex.slice(0, s.gexN)) add(true, g.k, `GEX ${g.n}${g.net >= 0 ? ' ▼' : ' ▲'}`, s.gexColor, 'sparse', 1);
+    const age = Math.round((Date.now() - m.t) / 1000);
+    return { lv, note: `Deribit · ${age < 90 ? age + ' s' : Math.round(age / 60) + ' Min.'} alt` };
+  },
+  draw(s, d, sc, c) {
+    for (const x of d.lv) {
+      drawLevel(sc, c, s, { p: x.p, from: null, color: x.color, dash: x.dash, width: Math.max(1, s.width + (x.w - 1)), label: s.names ? x.name : null, lc: x.color });
+      if (s.axis && x.w >= 2) sc.axisLabel(x.p, null, x.color, '#fff');
     }
   },
 };
@@ -1086,6 +1170,6 @@ const atrInd = {
   compute(s, c) { return { plots: { atr: { values: atr(c.bars, s), color: s.color } } }; },
 };
 
-export const REGISTRY = [vwap, rvwap, hvb, tpoInd, keylevels, htfvwap, va, vpInd, naked, sfpInd, inst, volcandles, volume, cvdInd, oiInd, fundingInd, bigtrades, liq, ma, bb, rsiInd, macdInd, atrInd];
+export const REGISTRY = [vwap, rvwap, hvb, tpoInd, keylevels, optionsInd, htfvwap, va, vpInd, naked, sfpInd, inst, volcandles, volume, cvdInd, oiInd, fundingInd, bigtrades, liq, ma, bb, rsiInd, macdInd, atrInd];
 export const TYPES = Object.fromEntries(REGISTRY.map(t => [t.type, t]));
 export const CATEGORIES = [['tqi', 'Meine Indikatoren (TQI)'], ['of', 'Orderflow'], ['std', 'Standard']];
