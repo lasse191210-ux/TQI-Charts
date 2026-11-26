@@ -1,7 +1,7 @@
 // Oberfläche: Toolbar, Zeichenleiste, Legende, Z-Tabelle, Panels rechts (Watchlist, Trades, Orderbuch),
 // Dialoge (Symbol, Indikatoren, Einstellungen), Handy-Leiste.
 import { ICON, TOOL_ICON, CHART_TYPES, coinBadge } from './icons.js';
-import { TOOLS, COLORS } from './render/drawings.js';
+import { TOOLS, COLORS, LINE_TYPES } from './render/drawings.js';
 import { TYPES, REGISTRY, CATEGORIES } from './indicators.js';
 import { MARKETS } from './exchanges.js';
 import { APP, COINS, COIN_NAME, TEMPLATES, CANDLE_STYLES } from './config.js';
@@ -58,6 +58,19 @@ export class UI {
     $('#legend').addEventListener('click', (e) => this.onLegendClick(e));
     $('#paneLegends').addEventListener('click', (e) => this.onLegendClick(e));
     $('#legend').addEventListener('dblclick', (e) => { const r = e.target.closest('[data-uid]'); if (r) this.openIndicatorSettings(r.dataset.uid); });
+    $('#legend').addEventListener('contextmenu', (e) => {
+      const r = e.target.closest('[data-uid]');
+      if (!r) return;
+      e.preventDefault(); e.stopPropagation();
+      const a = this.app, uid = r.dataset.uid, ind = a.state.indicators.find(i => i.uid === uid);
+      if (!ind) return;
+      this.ctxMenu(e.clientX, e.clientY, [
+        { label: 'Einstellungen …', icon: 'gear', act: () => this.openIndicatorSettings(uid) },
+        { label: ind.visible ? 'Ausblenden' : 'Einblenden', icon: ind.visible ? 'eyeOff' : 'eye', act: () => a.toggleIndicator(uid) },
+        'sep',
+        { label: 'Entfernen', icon: 'trash', danger: true, act: () => a.removeIndicator(uid) },
+      ]);
+    });
     window.addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.pop') && !e.target.closest('[data-pop]')) this.closePop(); });
     setInterval(() => { if (this.tapeDirty) this.renderTape(); }, 400);
@@ -176,9 +189,10 @@ export class UI {
       [1, 2, 3].map(w => `<button class="wbtn ${sel.width === w ? 'on' : ''}" data-w="${w}"><i style="height:${w}px"></i></button>`).join('')) +
       (sel.type === 'fib' ? `<button class="tb ${sel.ext ? 'on' : ''}" data-ext="1" title="nach rechts verlängern">→</button>` : '') +
       (sel.type === 'avwap' ? `<span class="vsep"></span><button class="tb" data-bands="1" title="Bänder: aus / ±1σ / ±1σ ±2σ / ±1σ ±2σ ±3σ">σ ${['aus', '1', '1 2', '1 2 3'][sel.bands || 0]}</button><button class="tb" data-src="1" title="Quelle">${(sel.src || 'hlc3').toUpperCase()}</button>` : '') +
-      `<span class="vsep"></span><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
+      `<span class="vsep"></span><button class="tb icon" data-set="1" title="Einstellungen (auch Rechtsklick / Doppelklick)">${ICON.gear}</button><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
     bar.classList.add('on');
     const d = this.app.drawings;
+    $('[data-set]', bar).onclick = () => this.openDrawingSettings(sel);
     $$('[data-c]', bar).forEach(b => b.onclick = () => { sel.color = b.dataset.c; d._changed(); });
     $$('[data-w]', bar).forEach(b => b.onclick = () => { sel.width = +b.dataset.w; d._changed(); });
     $('[data-ext]', bar)?.addEventListener('click', () => { sel.ext = !sel.ext; d._changed(); });
@@ -194,7 +208,7 @@ export class UI {
       const cond = ALERT_CONDS.find(c => c[0] === (sel.cond || 'cross')) || ALERT_CONDS[0];
       bar.innerHTML = `<span class="sb-t">🔔 ${esc(this.app.fmt(sel.pts[0].p))}</span><button class="tb" data-cond="1" title="Bedingung">${cond[1]}</button>` +
         (sel.fired ? `<button class="tb" data-arm="1" title="Wieder scharf schalten">wieder aktivieren</button>` : '') +
-        `<button class="tb" data-note="1" title="Notiz">Notiz</button><button class="tb" data-list="1">alle Alarme</button><span class="vsep"></span><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
+        `<button class="tb" data-note="1" title="Notiz">Notiz</button><button class="tb" data-list="1">alle Alarme</button><span class="vsep"></span><button class="tb icon" data-set="1" title="Einstellungen">${ICON.gear}</button><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
       $('[data-cond]', bar).onclick = () => { const k = ALERT_CONDS.findIndex(c => c[0] === (sel.cond || 'cross')); sel.cond = ALERT_CONDS[(k + 1) % ALERT_CONDS.length][0]; sel.fired = null; d._changed(); };
       $('[data-arm]', bar)?.addEventListener('click', () => { sel.fired = null; d._changed(); });
       $('[data-note]', bar).onclick = () => { const t = prompt('Notiz zum Alarm', sel.note || ''); if (t != null) { sel.note = t.trim(); d._changed(); } };
@@ -202,14 +216,141 @@ export class UI {
     } else {
       bar.innerHTML = `<span class="sb-t">TPO</span><button class="tb" data-mode="1" title="Darstellung">${sel.mode === 'blocks' ? 'Blöcke' : 'Buchstaben'}</button>` +
         `<button class="tb" data-block="1" title="Zeit pro Buchstabe">${sel.block || '30m'}</button><button class="tb" data-va="1" title="Value Area">VA ${sel.vaPct || 68} %</button>` +
-        `<button class="tb ${sel.clip ? 'on' : ''}" data-clip="1" title="Nur im gezogenen Preisbereich zählen">Preisbereich</button><span class="vsep"></span><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
+        `<button class="tb ${sel.clip ? 'on' : ''}" data-clip="1" title="Nur im gezogenen Preisbereich zählen">Preisbereich</button><span class="vsep"></span><button class="tb icon" data-set="1" title="Einstellungen">${ICON.gear}</button><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
       $('[data-mode]', bar).onclick = () => { sel.mode = sel.mode === 'blocks' ? 'letters' : 'blocks'; d._changed(); };
       $('[data-block]', bar).onclick = () => { const l = ['5m', '15m', '30m', '1h']; sel.block = l[(l.indexOf(sel.block || '30m') + 1) % l.length]; d._changed(); this.app.ensureNeeds(); };
       $('[data-va]', bar).onclick = () => { const l = [68, 70, 80]; sel.vaPct = l[(l.indexOf(sel.vaPct || 68) + 1) % l.length]; d._changed(); };
       $('[data-clip]', bar).onclick = () => { sel.clip = !sel.clip; d._changed(); };
     }
     $('[data-del]', bar).onclick = () => d.remove(sel);
+    $('[data-set]', bar).onclick = () => this.openDrawingSettings(sel);
     bar.classList.add('on');
+  }
+
+  // ================================================================ Rechtsklick-Menüs (wie TradingView / ATAS)
+  /** Kontextmenü an der Mausposition. items: { label, icon, act, danger, hint } oder 'sep'. */
+  ctxMenu(x, y, items) {
+    this.closePop();
+    const box = el(`<div class="pop ctxmenu"><div class="menu">${items.map((it, i) => it === 'sep' ? '<div class="msep"></div>'
+      : `<div class="mi act ${it.danger ? 'danger' : ''}" data-i="${i}">${it.icon ? ICON[it.icon] || '' : '<i class="noico"></i>'}<span>${esc(it.label)}</span>${it.hint ? `<small class="muted">${esc(it.hint)}</small>` : ''}</div>`).join('')}</div></div>`);
+    $('#pop').appendChild(box);
+    const w = box.offsetWidth, h = box.offsetHeight;
+    box.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+    box.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+    box.addEventListener('contextmenu', (e) => e.preventDefault());
+    box.onclick = (e) => {
+      const it = e.target.closest('[data-i]');
+      if (!it) return;
+      this.closePop();
+      items[+it.dataset.i].act?.();
+    };
+    const off = () => { this.closePop(); window.removeEventListener('wheel', off); window.removeEventListener('resize', off); window.removeEventListener('keydown', esc1); };
+    const esc1 = (e) => { if (e.key === 'Escape') off(); };
+    window.addEventListener('wheel', off, { once: true, passive: true });
+    window.addEventListener('resize', off, { once: true });
+    window.addEventListener('keydown', esc1);
+  }
+  /** Rechtsklick auf eine Zeichnung. */
+  openDrawingMenu(it, x, y) {
+    const d = this.app.drawings;
+    const items = [
+      { label: 'Einstellungen …', icon: 'gear', act: () => this.openDrawingSettings(it) },
+      { label: 'Klonen', icon: 'copy', act: () => d.clone(it) },
+      { label: it.locked ? 'Entsperren' : 'Sperren', icon: it.locked ? 'unlock' : 'lock', act: () => { it.locked = !it.locked; d._changed(); } },
+    ];
+    if (it.type === 'alert') items.push({ label: 'Alle Alarme …', icon: 'alert', act: () => this.openAlerts() });
+    items.push('sep', { label: 'Löschen', icon: 'trash', danger: true, hint: 'Entf', act: () => d.remove(it) });
+    this.ctxMenu(x, y, items);
+  }
+  /** Rechtsklick in den Chart: Chart-Einstellungen, Linie/Alarm am Preis, Trader, Ansicht. */
+  openChartMenu(x, y, price) {
+    const a = this.app, d = a.drawings, st = a.state;
+    const p = price > 0 ? price : null;
+    const ps = p ? a.fmt(p) : '';
+    const items = [
+      { label: 'Chart-Einstellungen (Farben, Kerzen) …', icon: 'candles', act: () => this.openChartSettings() },
+      { label: 'Einstellungen (Session, TPO, Zeitzone) …', icon: 'gear', act: () => this.openSettings() },
+      { label: 'Indikatoren …', icon: 'fx', hint: '/', act: () => this.openIndicatorDialog() },
+      { label: 'Vorlagen …', icon: 'grid', act: () => this.openTemplateSheet() },
+    ];
+    if (p) {
+      items.push('sep',
+        { label: `Horizontale Linie bei ${ps}`, icon: 'hline', act: () => d.addAt('hline', p) },
+        { label: `Alarm bei ${ps}`, icon: 'alert', act: () => d.addAt('alert', p) });
+      if (a.trader?.open) {
+        const T = a.trader;
+        items.push(
+          { label: `Trader: Entry ${ps}`, icon: 'trade', act: () => T.dragLine('entry', p, true) },
+          { label: `Trader: Stop ${ps}`, icon: 'trade', act: () => T.dragLine('stop', p, true) },
+          { label: `Trader: Ziel ${ps}`, icon: 'trade', act: () => T.dragLine('target', p, true) });
+      }
+      items.push({ label: `Preis kopieren (${ps})`, icon: 'copy', act: () => { navigator.clipboard?.writeText(String(+p.toFixed(a.priceDec))).then(() => this.toast('Preis kopiert', 'info', 1500)).catch(() => {}); } });
+    }
+    items.push('sep',
+      { label: 'Ansicht zurücksetzen', icon: 'reset', act: () => { a.chart.priceScale('right').setAutoScale(true); a.chart.timeScale().scrollToRealTime(); } },
+      { label: st.drawHide ? 'Zeichnungen einblenden' : 'Zeichnungen ausblenden', icon: st.drawHide ? 'eye' : 'eyeOff', act: () => { a.setState({ drawHide: !st.drawHide }, { render: false }); this.renderTools(); d._changed(false); } });
+    if (d.items.length) items.push({ label: `Alle Zeichnungen löschen (${d.items.length}) …`, icon: 'trash', danger: true, act: () => { if (confirm(`Alle ${d.items.length} Zeichnungen auf ${st.base} löschen?`)) d.clearAll(); } });
+    this.ctxMenu(x, y, items);
+  }
+
+  /** Einstellungen einer Zeichnung (wie TradingView: Stil, Text, Koordinaten). Änderungen sofort sichtbar. */
+  openDrawingSettings(it) {
+    const a = this.app, d = a.drawings, ty = it.type;
+    const NAME = Object.fromEntries(TOOLS);
+    const isLine = LINE_TYPES.has(ty), isPos = ty === 'long' || ty === 'short';
+    const one = ['hline', 'hray', 'vline', 'text', 'avwap', 'alert'].includes(ty);
+    const cur = {
+      color: it.color || '#2962ff', width: it.width || 1, dash: it.dash || 'solid', label: it.label || '', fillA: it.fillA ?? 0.14,
+      ext: !!it.ext, extL: !!it.extL, axis: it.axis !== false, text: it.text || '', fs: it.fs || 13, locked: !!it.locked,
+      src: it.src || 'hlc3', bands: it.bands ?? 1, cond: it.cond || 'cross', note: it.note || '',
+      mode: it.mode || (ty === 'ftpo' ? 'letters' : 'volume'), block: it.block || '30m', vaPct: it.vaPct || 68, clip: !!it.clip, rows: it.rows || 0, wf: it.wf || 0.4,
+      p0: +(+it.pts[0].p).toFixed(a.priceDec), p1: +(+it.pts[1].p).toFixed(a.priceDec), stop: it.stop != null ? +(+it.stop).toFixed(a.priceDec) : 0, target: it.target != null ? +(+it.target).toFixed(a.priceDec) : 0,
+    };
+    const step = Math.pow(10, -a.priceDec);
+    const schema = [{ sec: 'Stil' }];
+    if (!isPos && ty !== 'measure') schema.push({ k: 'color', label: 'Farbe', t: 'color' });
+    if (isLine || ['avwap', 'alert'].includes(ty)) schema.push({ k: 'width', label: 'Linienbreite', t: 'width' });
+    if (isLine) schema.push({ k: 'dash', label: 'Linienart', t: 'select', opts: [['solid', 'durchgezogen'], ['dashed', 'gestrichelt'], ['dotted', 'gepunktet']] });
+    if (ty === 'rect') schema.push({ k: 'fillA', label: 'Füllung (Deckkraft)', t: 'num', min: 0, max: 1, step: 0.02 });
+    if (ty === 'trend' || ty === 'fib') schema.push({ k: 'ext', label: 'nach rechts verlängern', t: 'bool' });
+    if (ty === 'trend' || ty === 'ray') schema.push({ k: 'extL', label: 'nach links verlängern', t: 'bool' });
+    if (ty === 'hline' || ty === 'hray') schema.push({ k: 'axis', label: 'Preis auf der Skala zeigen', t: 'bool' });
+    if (isLine) schema.push({ k: 'label', label: 'Beschriftung', t: 'text' });
+    if (ty === 'text') schema.push({ k: 'text', label: 'Text', t: 'text' }, { k: 'fs', label: 'Schriftgröße', t: 'int', min: 8, max: 48 });
+    if (ty === 'avwap') schema.push({ k: 'src', label: 'Quelle', t: 'select', opts: [['hlc3', 'HLC3'], ['ohlc4', 'OHLC4'], ['close', 'Close']] }, { k: 'bands', label: 'Bänder', t: 'select', opts: [[0, 'aus'], [1, '±1σ'], [2, '±1σ ±2σ'], [3, '±1σ ±2σ ±3σ']] });
+    if (ty === 'alert') schema.push({ k: 'cond', label: 'Bedingung', t: 'select', opts: ALERT_CONDS.map(c => [c[0], c[1]]) }, { k: 'note', label: 'Notiz', t: 'text' });
+    if (ty === 'ftpo') schema.push({ k: 'mode', label: 'Darstellung', t: 'select', opts: [['letters', 'Buchstaben'], ['blocks', 'Blöcke']] }, { k: 'block', label: 'Zeit pro Buchstabe', t: 'select', opts: [['5m', '5 Min.'], ['15m', '15 Min.'], ['30m', '30 Min.'], ['1h', '1 Std.']] }, { k: 'vaPct', label: 'Value Area %', t: 'select', opts: [[68, '68 %'], [70, '70 %'], [80, '80 %']] }, { k: 'clip', label: 'Nur im gezogenen Preisbereich zählen', t: 'bool' });
+    if (ty === 'fvp') schema.push({ k: 'mode', label: 'Anzeige', t: 'select', opts: [['volume', 'Volumen'], ['bidask', 'Kauf / Verkauf'], ['delta', 'Delta']] }, { k: 'rows', label: 'Zeilenhöhe (0 = automatisch)', t: 'num', min: 0, max: 1e6, step }, { k: 'wf', label: 'Breite des Profils', t: 'num', min: 0.1, max: 1, step: 0.05 });
+    if (ty !== 'measure') {
+      schema.push({ sec: 'Koordinaten' });
+      if (isPos) schema.push({ k: 'p0', label: 'Entry', t: 'num', step, min: 0 }, { k: 'stop', label: 'Stop', t: 'num', step, min: 0 }, { k: 'target', label: 'Ziel', t: 'num', step, min: 0 });
+      else if (ty !== 'vline') schema.push({ k: 'p0', label: one ? 'Preis' : 'Preis 1', t: 'num', step, min: 0 });
+      if (!one && !isPos) schema.push({ k: 'p1', label: 'Preis 2', t: 'num', step, min: 0 });
+    }
+    schema.push({ sec: 'Sonstiges' }, { k: 'locked', label: 'Sperren (nicht verschiebbar)', t: 'bool' });
+    const body = el(`<div class="setdlg"><div class="form" id="dsForm">${formHtml(schema, cur)}</div>
+      <div class="dlg-foot"><button class="tb danger" id="dsDel">${ICON.trash}<span>Löschen</span></button><button class="tb" id="dsClone">${ICON.copy}<span>Klonen</span></button><div class="grow"></div><button class="tb primary" id="dsOk">Fertig</button></div></div>`);
+    const close = this.modal(NAME[ty] || 'Zeichnung', body);
+    const apply = () => {
+      const has = (k) => schema.some(f => f.k === k);
+      for (const k of ['color', 'width', 'dash', 'fillA', 'ext', 'extL', 'axis', 'fs', 'locked', 'src', 'cond', 'mode', 'block', 'clip', 'rows', 'wf']) if (has(k)) it[k] = cur[k];
+      if (has('bands')) it.bands = +cur.bands;
+      if (has('vaPct')) it.vaPct = +cur.vaPct;
+      if (has('label')) it.label = String(cur.label || '').trim();
+      if (has('note')) it.note = String(cur.note || '').trim();
+      if (has('text') && String(cur.text).trim()) it.text = String(cur.text).trim();
+      if (has('p0') && cur.p0 > 0) { const dp = cur.p0 - it.pts[0].p; it.pts[0].p = cur.p0; if (one || isPos) it.pts[1].p = cur.p0; if (isPos && !has('stop')) { it.stop += dp; it.target += dp; } }
+      if (has('p1') && cur.p1 > 0) it.pts[1].p = cur.p1;
+      if (has('stop') && cur.stop > 0) it.stop = cur.stop;
+      if (has('target') && cur.target > 0) it.target = cur.target;
+      if (ty === 'alert') it.fired = null;
+      d._changed();
+      if (ty === 'ftpo') a.ensureNeeds();
+    };
+    this.bindForm($('#dsForm', body), cur, (imm) => { if (imm) apply(); });
+    $('#dsDel', body).onclick = () => { close(); d.remove(it); };
+    $('#dsClone', body).onclick = () => { close(); d.clone(it); };
+    $('#dsOk', body).onclick = () => { apply(); close(); };
   }
 
   /** Liste aller Alarme (aktueller Coin). */
@@ -562,7 +703,7 @@ export class UI {
     if (!box) return;
     const a = this.app;
     const min = a.state.tapeMin || 0;
-    const big = a.autoBigUsd();
+    const big = a.bigUsd();
     const rows = [];
     for (let k = a.tape.length - 1; k >= 0 && rows.length < 120; k--) {
       const x = a.tape[k];
@@ -1047,6 +1188,8 @@ export class UI {
       if (!e.target.dataset.k) return;
       readField(e.target, st().cur);
       if (e.target.dataset.auto != null) st().rerender?.();
+      // abhängige Felder aus- bzw. einschalten (z. B. Min. Volumen nur ohne Auto-Filter)
+      $$('[data-offk]', box).forEach(x => { const off = String(st().cur[x.dataset.offk]) === x.dataset.offv; x.disabled = off; x.closest('.f-row')?.classList.toggle('off', off); });
       st().onChange(true);
     });
     box.addEventListener('click', (e) => {
@@ -1291,6 +1434,11 @@ function fieldHtml(f, s) {
       break;
     }
     default: input = esc(String(v));
+  }
+  if (f.offIf) {
+    const off = String(s[f.offIf[0]]) === String(f.offIf[1]);
+    input = input.replace(/<(input|select)\b/, `<$1 data-offk="${f.offIf[0]}" data-offv="${f.offIf[1]}" ${off ? 'disabled' : ''}`);
+    return `<div class="f-row ${off ? 'off' : ''}"><label for="${id}">${esc(f.label)}</label><span class="f-ctl">${input}</span></div>`;
   }
   return `<div class="f-row"><label for="${id}">${esc(f.label)}</label><span class="f-ctl">${input}</span></div>`;
 }

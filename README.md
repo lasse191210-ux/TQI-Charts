@@ -22,8 +22,9 @@ Krypto-Charts im Browser, aufgebaut wie DM Charts / TradingView – mit den eige
   - Naked POC, Naked UFA, Single Prints, Tails (30-Min-TPO), berührte Level schließen nach Session-Ende
   - SFP, institutionelle Level (52w, pw/pm/pd H/L, do/wo/mo/qo/yo, 200/50-Tage-Durchschnitt), Volumen-Kerzen
 - **Options-Level (Deribit, BTC/ETH):** Call Resistance, Put Support, HVL (Gamma-Flip), Max Pain, erwartete Spanne 1T/1W, Call/Put Wall, GEX 1–10, 0DTE, Major Wall – gleiche Rechnung wie im TQI Terminal
-- **Orderflow:** Big Trades (Marktorders mit gleicher Zeit + Seite zusammengefasst, live und rückwirkend per REST nachgeladen, 48 Std. im Browser gespeichert), Volumen nach Delta, CVD, Open Interest, Funding, Liquidationen, Trades-Tape, Orderbuch (DOM), Watchlist
+- **Orderflow:** Big Trades wie ATAS (Cumulative Trades: Marktorders mit gleicher Zeit + Seite = eine Order; Auto-Filter Stark/Mittel/Schwach = 0,6/0,4/0,25 × Durchschnittsvolumen pro Minute der letzten 24 Std., bei BTC ≈ 1 / 3–4 / 10 Orders pro Stunde; oder feste Mindestgröße in Coins, Max. Volumen, Preis-Lage am Hoch/Tief/Körper/Docht; graue Kreise, Größe nach Volumen; live und rückwirkend per REST nachgeladen, 48 Std. im Browser gespeichert), Volumen nach Delta, CVD, Open Interest, Funding, Liquidationen, Trades-Tape, Orderbuch (DOM), Watchlist
 - **Standard:** EMA/SMA, Bollinger, RSI, MACD, ATR
+- **Rechtsklick wie TradingView/ATAS:** auf eine Zeichnung → Einstellungen (Farbe, Breite, Linienart, Beschriftung, Verlängern, Füllung, exakte Preise), Klonen, Sperren, Löschen; Doppelklick öffnet die Einstellungen direkt. In den Chart → Chart-Einstellungen, Einstellungen, Indikatoren, Vorlagen, horizontale Linie/Alarm am Preis, Trader-Entry/Stop/Ziel, Ansicht zurücksetzen. Auf eine Legenden-Zeile → Indikator-Einstellungen. Handy: Zeichnung antippen → Zahnrad
 - **Zeichnen:** Trendlinie, Strahl, horizontale Linie/Strahl, vertikale Linie, Rechteck, Fibonacci, Preisspanne, Anchored VWAP (mit ±1/2/3σ-Bändern, Quelle HLC3/OHLC4/Close), Fixed Range Volume Profile, Fixed Range TPO (Zeitraum, optional Preisbereich), Text, Long-/Short-Position, Alarm, Magnet, sperren, ausblenden
 - **Alarme:** Alarm-Linie ziehen (kreuzt / steigt über / fällt unter), Ton, Vibration, System-Benachrichtigung – solange die Seite offen ist
 - **TPO-Ansicht (wie MMT):** Profil antippen → mit Nachbar zusammenfügen, an einer Stelle teilen, trennen
@@ -50,7 +51,7 @@ Reines HTML/CSS/JavaScript (ES-Module), kein Build-Schritt. Lokal starten:
 python3 -m http.server 8000
 ```
 
-Tests: `node --test test/calc.test.mjs` (Rechnungen), `python3 test/e2e.py`, `python3 test/functional.py`, `python3 test/v11.py` und `python3 test/v12.py` (Browser mit simulierten Börsendaten und simuliertem Bybit-Konto, braucht Playwright).
+Tests: `node --test test/calc.test.mjs` (Rechnungen), `python3 test/e2e.py`, `python3 test/functional.py`, `python3 test/v11.py`, `python3 test/v12.py` und `python3 test/v13.py` (Browser mit simulierten Börsendaten und simuliertem Bybit-Konto, braucht Playwright).
 
 ## Lizenzen
 

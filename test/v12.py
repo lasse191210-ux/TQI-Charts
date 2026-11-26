@@ -104,17 +104,17 @@ def main():
         pc_list = [{'uid': f'p{i}', 'type': t, 'visible': True, 's': s} for i, (t, s) in enumerate([
             ('tpo', {}), ('keylevels', {}), ('vwap', {'period': 'day'}), ('rvwap', {'feed': 'bitstamp-spot'}), ('hvb', {}),
             ('htfvwap', {'w': False, 'pw': False, 'm': False, 'pm': False, 'q': False, 'pq': False, 'y': False, 'py': False}),
-            ('naked', {'singles': False}), ('inst', {}), ('sfp', {}), ('volcandles', {}), ('bigtrades', {'minUsd': 777777})])]
+            ('naked', {'singles': False}), ('inst', {}), ('sfp', {'strength': 7}), ('volcandles', {}), ('bigtrades', {'minUsd': 777777, 'group': 'bar'})])]
         old_bild = [{'uid': 'o1', 'type': 'rvwap', 'visible': True, 's': {}}, {'uid': 'o2', 'type': 'tpo', 'visible': False, 's': {}}, {'uid': 'o3', 'type': 'keylevels', 'visible': True, 's': {}}, {'uid': 'o4', 'type': 'options', 'visible': True, 's': {}}]
         st_pc = {'template': 'keylevels', 'indicators': pc_list, 'tplState': {'bild': old_bild}, 'colorsV': 2, 'tplV': 0, 'theme': 'dark', 'market': 'binance-perp', 'base': 'BTC', 'tf': '15m'}
         page = new_page({'width': 1440, 'height': 860}, storage=st_pc)
         page.wait_for_timeout(2500)
-        R['pc_migration'] = page.evaluate(f"({{ template: tqi.state.template, name: tqi.templateName(), inds: {inds}, bigMin: tqi.state.indicators.find(i => i.type === 'bigtrades')?.s.minUsd, hasKl: 'keylevels' in (tqi.state.tplState || {{}}) }})")
+        R['pc_migration'] = page.evaluate(f"({{ template: tqi.state.template, name: tqi.templateName(), inds: {inds}, sfpStrength: tqi.state.indicators.find(i => i.type === 'sfp')?.s.strength, bt: (b => ({{ auto: b.auto, intensity: b.intensity, group: b.group, text: b.text }}))(tqi.state.indicators.find(i => i.type === 'bigtrades').s), hasKl: 'keylevels' in (tqi.state.tplState || {{}}) }})")
         shot(page, '01_pc_standard')
         page.evaluate("tqi.applyTemplate('keylevels')"); page.wait_for_timeout(800)
         R['pc_second_reset'] = page.evaluate(inds)
         page.evaluate("tqi.applyTemplate('bild')"); page.wait_for_timeout(800)
-        R['pc_back_to_standard'] = page.evaluate(f"({{ inds: {inds}, bigMin: tqi.state.indicators.find(i => i.type === 'bigtrades')?.s.minUsd }})")
+        R['pc_back_to_standard'] = page.evaluate(f"({{ inds: {inds}, sfpStrength: tqi.state.indicators.find(i => i.type === 'sfp')?.s.strength }})")
         # Neu laden: Umzug darf nicht noch einmal laufen
         page.reload(); page.wait_for_function('window.tqi && window.tqi.bars.length > 100', timeout=20000); page.wait_for_timeout(800)
         R['pc_after_reload'] = page.evaluate(f"({{ template: tqi.state.template, n: tqi.state.indicators.length, tplV: tqi.state.tplV }})")
@@ -122,12 +122,12 @@ def main():
         # ================================================================ 2) Vorlagen: teilen (Code), importieren, kopieren
         code = page.evaluate("tqi.exportTemplate()")
         R['share_code_len'] = len(code)
-        imp = page.evaluate(f"(() => {{ const x = tqi.parseTemplate({json.dumps(code)}); return {{ name: x.name, types: x.list.map(i => i.type), big: x.list.find(i => i.type === 'bigtrades').s.minUsd, hv: x.list.find(i => i.type === 'htfvwap').s.w }}; }})()")
+        imp = page.evaluate(f"(() => {{ const x = tqi.parseTemplate({json.dumps(code)}); return {{ name: x.name, types: x.list.map(i => i.type), sfp: x.list.find(i => i.type === 'sfp').s.strength, hv: x.list.find(i => i.type === 'htfvwap').s.w }}; }})()")
         R['share_parse'] = imp
         page.evaluate("tqi.ui.openShareTemplate()"); shot(page, '02_teilen', 500)
         page.evaluate("tqi.ui.closeTopModal()")
         page.evaluate("tqi.copyTemplateTo('orderflow'); tqi.applyTemplate('orderflow')"); page.wait_for_timeout(800)
-        R['copy_to_orderflow'] = page.evaluate(f"({{ n: tqi.state.indicators.length, big: tqi.state.indicators.find(i => i.type === 'bigtrades')?.s.minUsd }})")
+        R['copy_to_orderflow'] = page.evaluate(f"({{ n: tqi.state.indicators.length, sfp: tqi.state.indicators.find(i => i.type === 'sfp')?.s.strength }})")
         page.evaluate("tqi.resetTemplate()"); page.wait_for_timeout(500)
         R['orderflow_reset'] = page.evaluate(inds)
         page.evaluate("tqi.applyTemplate('bild')")
@@ -145,7 +145,7 @@ def main():
         shot(m, '04_handy_import')
         if R['phone_import_dialog']:
             m.click('#imStd'); m.wait_for_timeout(1200)
-        R['phone_after_import'] = m.evaluate(f"({{ template: tqi.state.template, inds: {inds}, big: tqi.state.indicators.find(i => i.type === 'bigtrades')?.s.minUsd, hash: location.hash }})")
+        R['phone_after_import'] = m.evaluate(f"({{ template: tqi.state.template, inds: {inds}, sfp: tqi.state.indicators.find(i => i.type === 'sfp')?.s.strength, hash: location.hash }})")
         m.context.close()
 
         # ================================================================ 3) Chart-Einstellungen + App installieren

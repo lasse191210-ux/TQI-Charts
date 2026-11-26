@@ -1089,32 +1089,66 @@ function fmtShort(x) {
   if (a >= 10) return f(a, 1);
   return f(a, 2);
 }
+/** Auto-Filter wie ATAS (Stark / Mittel / Schwach): Mindestgröße = Faktor × Durchschnittsvolumen pro Minute (24 Std.).
+ *  Gemessen an Binance BTCUSDT Perp (26.11.2026, 8 Stunden über den Tag, Ø 95 BTC/Min.): stark ≈ 1 Order pro Stunde,
+ *  mittel ≈ 3–4, schwach ≈ 10 – in ruhigen Stunden weniger, in hektischen mehr. Vorher (fest 200.000 $): ≈ 200 pro Stunde. */
+export const BT_AUTO = { strong: 0.6, medium: 0.4, weak: 0.25 };
+const BT_LOC = [['any', 'überall'], ['high', 'am Hoch'], ['low', 'am Tief'], ['hl', 'am Hoch oder Tief'], ['body', 'im Kerzenkörper'], ['upper', 'im oberen Docht'], ['lower', 'im unteren Docht']];
+/** Preis-Lage in der Kerze (wie ATAS „Price Location“); Hoch/Tief = oberes bzw. unteres Zehntel der Kerze. */
+export function btLocOk(loc, p, b) {
+  if (!b || loc === 'any') return true;
+  const tol = Math.max((b.h - b.l) * 0.1, 1e-12);
+  const top = Math.max(b.o, b.c), bot = Math.min(b.o, b.c);
+  switch (loc) {
+    case 'high': return p >= b.h - tol;
+    case 'low': return p <= b.l + tol;
+    case 'hl': return p >= b.h - tol || p <= b.l + tol;
+    case 'body': return p >= bot && p <= top;
+    case 'upper': return p > top;
+    case 'lower': return p < bot;
+    default: return true;
+  }
+}
 const bigtrades = {
   type: 'bigtrades', name: 'Big Trades', cat: 'of', pane: 'main',
-  desc: 'Große Marktorders als Blasen (wie ATAS Big Trades): Trades mit gleicher Zeit und Seite = eine Order. Live und rückwärts nachgeladen, im Browser gespeichert.',
-  defaults: { minUsd: 0, group: 'bar', hours: 4, scale: 1, text: true, unit: 'usd', buy: INK2, sell: INK, opacity: 0.55, border: true, maxBubbles: 1500 },
+  desc: 'Große Marktorders als Kreise wie ATAS Big Trades (Cumulative Trades: alle Trades mit gleicher Zeit und Seite = eine Order). Auto-Filter Stark/Mittel/Schwach oder feste Mindestgröße in Coins. Live und rückwärts nachgeladen.',
+  defaults: { auto: true, intensity: 'strong', minVol: 25, maxVol: 0, loc: 'any', group: 'none', hours: 4, fixed: false, size: 7, minSize: 4, maxSize: 34, text: false, unit: 'coin', buy: INK2, sell: INK2, opacity: 0.45, border: true, maxBubbles: 1500 },
   schema: [
+    { sec: 'Berechnung (Cumulative Trades)' },
+    { k: 'auto', label: 'Auto-Filter', t: 'bool' },
+    { k: 'intensity', label: 'Auto-Filter Stärke', t: 'select', opts: [['strong', 'Stark – nur die größten (BTC ≈ 1 pro Std.)'], ['medium', 'Mittel (BTC ≈ 3–4 pro Std.)'], ['weak', 'Schwach (BTC ≈ 10 pro Std.)']], offIf: ['auto', false] },
+    { k: 'minVol', label: 'Min. Volumen (Coins)', t: 'num', min: 0, max: 1e9, step: 0.1, offIf: ['auto', true] },
+    { k: 'maxVol', label: 'Max. Volumen (0 = ohne)', t: 'num', min: 0, max: 1e9, step: 0.1 },
     { sec: 'Filter' },
-    { k: 'minUsd', label: 'Mindestgröße in USD (0 = automatisch)', t: 'int', min: 0, max: 1e9 },
-    { k: 'group', label: 'Anzeige', t: 'select', opts: [['bar', 'je Kerze zusammengefasst (übersichtlich)'], ['none', 'jede Order einzeln (wie ATAS)']] },
+    { k: 'loc', label: 'Preis-Lage in der Kerze', t: 'select', opts: BT_LOC },
     { k: 'hours', label: 'Historie nachladen (Stunden)', t: 'int', min: 0, max: 24 },
-    { k: 'maxBubbles', label: 'Max. Blasen', t: 'int', min: 10, max: 10000 },
-    { sec: 'Stil', tab: 'style' },
-    { k: 'scale', label: 'Blasengröße', t: 'num', min: 0.3, max: 4, step: 0.1 },
-    { k: 'text', label: 'Größe in der Blase anzeigen', t: 'bool' },
-    { k: 'unit', label: 'Größe in', t: 'select', opts: [['usd', 'USD'], ['coin', 'Coins']] },
+    { sec: 'Darstellung', tab: 'style' },
+    { k: 'group', label: 'Anzeige', t: 'select', opts: [['none', 'jede Order einzeln (wie ATAS)'], ['bar', 'je Kerze zusammengefasst']] },
+    { k: 'fixed', label: 'Feste Größe', t: 'bool' },
+    { k: 'size', label: 'Größe', t: 'num', min: 1, max: 40, step: 1 },
+    { k: 'minSize', label: 'Mindestgröße', t: 'num', min: 1, max: 40, step: 1, offIf: ['fixed', true] },
+    { k: 'maxSize', label: 'Maximalgröße', t: 'num', min: 2, max: 80, step: 1, offIf: ['fixed', true] },
+    { k: 'text', label: 'Volumen im Kreis anzeigen', t: 'bool' },
+    { k: 'unit', label: 'Volumen in', t: 'select', opts: [['coin', 'Coins (wie ATAS)'], ['usd', 'USD']] },
     { k: 'buy', label: 'Farbe Kauf', t: 'color' },
     { k: 'sell', label: 'Farbe Verkauf', t: 'color' },
     { k: 'opacity', label: 'Deckkraft', t: 'num', min: 0.05, max: 1, step: 0.05 },
     { k: 'border', label: 'Rand', t: 'bool' },
+    { k: 'maxBubbles', label: 'Max. Kreise', t: 'int', min: 10, max: 10000 },
   ],
-  title(s) { return 'Big Trades ≥ ' + (s.minUsd > 0 ? fmtShort(s.minUsd) + ' $' : 'auto'); },
+  title(s) { return 'Big Trades ' + (s.auto ? 'Auto ' + ({ strong: 'stark', medium: 'mittel', weak: 'schwach' }[s.intensity] || 'stark') : '≥ ' + fmtShort(s.minVol)); },
   needs() { return []; },
   compute(s, c) {
-    const thr = s.minUsd > 0 ? s.minUsd : c.autoBig();
-    let list = c.bigTrades(thr);
-    if (s.group !== 'none') {
-      // je Kerze und Seite eine Blase: Summe der großen Orders, Preis = mittlerer Preis (nach Menge)
+    const px = c.bars[c.bars.length - 1]?.c || 0;
+    const amv = c.avgMinVol();
+    // Mindestgröße in Coins: Auto = Faktor × Durchschnittsvolumen pro Minute, sonst fest
+    let thr = s.auto ? (BT_AUTO[s.intensity] ?? BT_AUTO.strong) * (amv || 0) : +s.minVol || 0;
+    if (!(thr > 0)) thr = px > 0 ? c.autoBig() / px : 0;
+    const maxV = +s.maxVol > 0 ? +s.maxVol : Infinity;
+    let list = c.bigTrades(thr * px * 0.97).filter(x => x.q >= thr && x.q <= maxV);
+    if (s.loc && s.loc !== 'any') list = list.filter(x => { const i = c.idx(x.t); return btLocOk(s.loc, x.p, i == null ? null : c.bars[i]); });
+    if (s.group === 'bar') {
+      // je Kerze und Seite ein Kreis: Summe der großen Orders, Preis = mittlerer Preis (nach Menge)
       const map = new Map();
       for (const x of list) {
         const bt = floorTf(x.t, c.tf), k = bt + (x.buy ? 'b' : 's');
@@ -1124,12 +1158,14 @@ const bigtrades = {
       }
       list = [...map.values()].map(g => ({ t: g.t, buy: g.buy, usd: g.usd, q: g.q, p: g.pq / g.q, n: g.n })).sort((a, b) => a.t - b.t);
     }
-    return { list: list.slice(-s.maxBubbles), thr, note: c.btInfo() };
+    const info = c.btInfo();
+    return { list: list.slice(-s.maxBubbles), thr, note: (thr > 0 ? '≥ ' + fmtShort(thr) + ' ' + c.base + (s.unit === 'usd' && px ? ' (' + fmtShort(thr * px) + ' $)' : '') + ' · ' : '') + info };
   },
   draw(s, d, sc) {
+    const lo = Math.min(s.minSize, s.maxSize), hi = Math.max(s.minSize, s.maxSize);
     for (const x of d.list) {
-      // je Kerze zusammengefasst: logarithmisch (große Summen bleiben kompakt), einzeln: Wurzel wie ATAS
-      const r = s.group !== 'none' ? Math.max(3, Math.min(28, (3 + 3.2 * Math.log2(1 + x.usd / d.thr)) * s.scale)) : Math.max(3, Math.min(36, 4.2 * Math.sqrt(x.usd / d.thr) * s.scale));
+      // Größe wie ATAS: abhängig vom Volumen im Verhältnis zur Mindestgröße (Fläche ~ Volumen), begrenzt durch Min/Max
+      const r = s.fixed ? s.size : Math.max(lo, Math.min(hi, s.size * Math.sqrt(x.q / (d.thr || x.q))));
       const col = x.buy ? s.buy : s.sell;
       sc.bubble({ t: x.t, p: x.p, r, fill: rgba(col, s.opacity), stroke: s.border ? rgba(col, 0.95) : null, text: s.text ? fmtShort(s.unit === 'usd' ? x.usd : x.q) : null, tc: '#ffffff' });
     }

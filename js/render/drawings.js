@@ -15,6 +15,9 @@ export const TOOLS = [
 const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap', 'alert']);
 const FIB = [[0, '#787b86'], [0.236, '#f23645'], [0.382, '#ff9800'], [0.5, '#4caf50'], [0.618, '#089981'], [0.786, '#00bcd4'], [1, '#787b86'], [1.618, '#2962ff']];
 export const COLORS = ['#2962ff', '#e91e63', '#7c3aed', '#f0a93b', '#26a69a', '#ef5350', '#131722', '#ffffff'];
+/** Linien-Zeichnungen: Strichart, Beschriftung und Verlängern einstellbar (Rechtsklick → Einstellungen). */
+export const LINE_TYPES = new Set(['trend', 'ray', 'hline', 'hray', 'vline', 'rect']);
+const dashOf = (d, hr) => (d === 'dashed' ? [6 * hr, 4 * hr] : d === 'dotted' ? [1.5 * hr, 3 * hr] : []);
 
 export class Drawings {
   constructor(app) {
@@ -42,6 +45,24 @@ export class Drawings {
   save() { storage.set(this.key, this.items); }
   clearAll() { this.items = []; this.sel = null; this._changed(); }
   remove(it) { this.items = this.items.filter(x => x !== it); if (this.sel === it) this.sel = null; this._changed(); }
+  /** Zeichnung kopieren (wie TradingView „Klonen“): leicht versetzt, damit man sie sieht. */
+  clone(it) {
+    const c = JSON.parse(JSON.stringify(it));
+    c.id = uid(); c.locked = false;
+    const dl = Math.max(2, Math.round(Math.abs(this.tToL(it.pts[1]?.t ?? it.pts[0].t) - this.tToL(it.pts[0].t)) * 0.1));
+    c.pts = c.pts.map(q => ({ t: this.lToT(this.tToL(q.t) + dl), p: q.p }));
+    this.items.push(c); this.sel = c; this._changed();
+    return c;
+  }
+  /** Neue Zeichnung an einem Preis (Chart-Menü: horizontale Linie / Alarm hier). */
+  addAt(type, p) {
+    const b = this.app.bars, t = b[b.length - 1]?.t;
+    if (!(p > 0) || t == null) return null;
+    const it = this._create(type, { t, p });
+    if (!it) return null;
+    this.items.push(it); this.sel = it; this._changed();
+    return it;
+  }
 
   setTool(t) {
     this.tool = t;
@@ -220,6 +241,26 @@ export class Drawings {
     };
     el.addEventListener('pointerup', end, true);
     el.addEventListener('pointercancel', end, true);
+    // Rechtsklick: auf einer Zeichnung → Menü der Zeichnung (Einstellungen, Klonen, Sperren, Löschen), sonst Chart-Menü
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (this.pending) return;
+      const { x, y } = rel(e, el);
+      const hit = !this.app.state.drawHide ? this._hit(x, y) : null;
+      if (hit) { this.sel = hit.item; this._changed(false); this.app.ui.openDrawingMenu(hit.item, e.clientX, e.clientY); return; }
+      const p = this.series && y < el.clientHeight - 26 ? this.series.coordinateToPrice(y) : null;
+      this.app.ui.openChartMenu(e.clientX, e.clientY, p);
+    }, true);
+    // Doppelklick auf eine Zeichnung → Einstellungen
+    el.addEventListener('dblclick', (e) => {
+      if (this.tool !== 'cursor' || this.app.state.drawHide) return;
+      const { x, y } = rel(e, el);
+      const hit = this._hit(x, y);
+      if (!hit) return;
+      e.preventDefault(); e.stopPropagation();
+      this.sel = hit.item; this._changed(false);
+      this.app.ui.openDrawingSettings(hit.item);
+    }, true);
     window.addEventListener('keydown', (e) => {
       if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
       if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { this.remove(this.sel); e.preventDefault(); }
@@ -334,12 +375,14 @@ export class Drawings {
         case 'vline': if (g.x1 != null && Math.abs(x - g.x1) < 6) return { item: it }; break;
         case 'trend': case 'ray': {
           if (g.x1 == null || g.x2 == null) break;
-          let x2 = g.x2, y2 = g.y2;
-          if (it.type === 'ray' && x2 !== g.x1) { const k2 = (y2 - g.y1) / (x2 - g.x1); x2 = x2 > g.x1 ? W : 0; y2 = g.y1 + k2 * (x2 - g.x1); }
-          if (segDist(x, y, g.x1, g.y1, x2, y2) < 6) return { item: it };
+          let x1 = g.x1, y1 = g.y1, x2 = g.x2, y2 = g.y2;
+          const k2 = x2 !== x1 ? (y2 - y1) / (x2 - x1) : null;
+          if (k2 != null && (it.type === 'ray' || it.ext)) { const xe = x2 > x1 ? W : 0; y2 = y1 + k2 * (xe - x1); x2 = xe; }
+          if (k2 != null && it.extL) { const xs = g.x2 > g.x1 ? 0 : W; y1 = g.y1 + k2 * (xs - g.x1); x1 = xs; }
+          if (segDist(x, y, x1, y1, x2, y2) < 6) return { item: it };
           break;
         }
-        case 'text': if (g.x1 != null && x >= g.x1 - 4 && x <= g.x1 + 8 * (it.text?.length || 1) && Math.abs(y - g.y1) < 12) return { item: it }; break;
+        case 'text': { const f = (it.fs || 13) / 13; if (g.x1 != null && x >= g.x1 - 4 && x <= g.x1 + 8 * f * (it.text?.length || 1) && Math.abs(y - g.y1) < 12 * f) return { item: it }; break; }
         case 'long': case 'short': {
           const ys = [this.pToY(it.stop), this.pToY(it.target)];
           if (g.x1 != null && x >= Math.min(g.x1, g.x2) && x <= Math.max(g.x1, g.x2) && y >= Math.min(...ys) && y <= Math.max(...ys)) return { item: it };
@@ -366,7 +409,7 @@ export class Drawings {
     if (this.app.state.drawHide) return out;
     for (const it of this.items) {
       if (it.type === 'avwap') { const r = this._avwap(it); if (r && r.v.length) add(r.v[r.v.length - 1], it.color); continue; }
-      if (it.type === 'hline' || it.type === 'hray') add(it.pts[0].p, it.color);
+      if (it.type === 'hline' || it.type === 'hray') { if (it.axis !== false) add(it.pts[0].p, it.color); }
       else if (it.type === 'alert') add(it.pts[0].p, it.fired ? '#787b86' : (this.app.theme.dark ? '#5d606b' : '#131722'));
       else if (it === this.sel && it.type === 'ftpo') {
         const p = this._ftpo(it);
@@ -439,14 +482,17 @@ export class Drawings {
         const col = it.color || '#2962ff';
         ctx.lineWidth = Math.max(1, (it.width || 1) * hr * (sel ? 1 : 0.85));
         ctx.strokeStyle = col; ctx.fillStyle = col;
-        ctx.setLineDash([]);
+        ctx.setLineDash(LINE_TYPES.has(it.type) ? dashOf(it.dash, hr) : []);
         const handles = [];
         switch (it.type) {
           case 'trend': case 'ray': {
             if (g.x1 == null || g.x2 == null) break;
-            let x2 = g.x2, y2 = g.y2;
-            if (it.type === 'ray' && x2 !== g.x1) { const k = (y2 - g.y1) / (x2 - g.x1); x2 = x2 > g.x1 ? W / hr : 0; y2 = g.y1 + k * (x2 - g.x1); }
-            ctx.beginPath(); ctx.moveTo(X(g.x1), Y(g.y1)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke();
+            let x1 = g.x1, y1 = g.y1, x2 = g.x2, y2 = g.y2;
+            const k = x2 !== x1 ? (y2 - y1) / (x2 - x1) : null;
+            // Strahl bzw. „nach rechts/links verlängern“
+            if (k != null && (it.type === 'ray' || it.ext)) { const xe = x2 > x1 ? W / hr : 0; y2 = y1 + k * (xe - x1); x2 = xe; }
+            if (k != null && it.extL) { const xs = g.x2 > g.x1 ? 0 : W / hr; y1 = g.y1 + k * (xs - g.x1); x1 = xs; }
+            ctx.beginPath(); ctx.moveTo(X(x1), Y(y1)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke();
             handles.push([g.x1, g.y1], [g.x2, g.y2]);
             break;
           }
@@ -472,7 +518,7 @@ export class Drawings {
           }
           case 'rect': {
             if (g.x1 == null || g.x2 == null) break;
-            ctx.fillStyle = rgba(col, 0.14);
+            ctx.fillStyle = rgba(col, it.fillA ?? 0.14);
             ctx.fillRect(X(Math.min(g.x1, g.x2)), Y(Math.min(g.y1, g.y2)), X(Math.abs(g.x2 - g.x1)), Y(Math.abs(g.y2 - g.y1)));
             ctx.strokeRect(X(Math.min(g.x1, g.x2)), Y(Math.min(g.y1, g.y2)), X(Math.abs(g.x2 - g.x1)), Y(Math.abs(g.y2 - g.y1)));
             handles.push([g.x1, g.y1], [g.x2, g.y2]);
@@ -654,9 +700,10 @@ export class Drawings {
           }
           case 'text': {
             if (g.x1 == null) break;
-            ctx.font = font(13, 600); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+            const fs = it.fs || 13;
+            ctx.font = font(fs, 600); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
             ctx.fillStyle = col; ctx.fillText(it.text || '', X(g.x1), Y(g.y1));
-            if (sel) { const w = ctx.measureText(it.text || '').width; ctx.strokeStyle = rgba('#2962ff', 0.8); ctx.strokeRect(X(g.x1) - 3 * hr, Y(g.y1) - 10 * vr, w + 6 * hr, 20 * vr); }
+            if (sel) { const w = ctx.measureText(it.text || '').width; ctx.strokeStyle = rgba('#2962ff', 0.8); ctx.strokeRect(X(g.x1) - 3 * hr, Y(g.y1) - (fs * 0.75) * vr, w + 6 * hr, fs * 1.5 * vr); }
             break;
           }
           case 'long': case 'short': {
@@ -679,6 +726,17 @@ export class Drawings {
             handles.push([g.x1, g.y1], [g.x1, this.pToY(it.stop)], [g.x1, this.pToY(it.target)], [g.x2, g.y1]);
             break;
           }
+        }
+        if (it.label && LINE_TYPES.has(it.type)) {
+          // Beschriftung: waagerechte Linien rechts über der Linie, Trendlinie am Ende, senkrechte oben, Rechteck innen oben links
+          ctx.setLineDash([]);
+          ctx.font = font(11.5, 600); ctx.fillStyle = col; ctx.textBaseline = 'bottom';
+          const tw = ctx.measureText(it.label).width;
+          if ((it.type === 'hline' || it.type === 'hray') && g.y1 != null) { ctx.textAlign = 'right'; ctx.fillText(it.label, W - 8 * hr, Y(g.y1) - 3 * vr); }
+          else if ((it.type === 'trend' || it.type === 'ray') && g.x2 != null) { ctx.textAlign = g.x2 >= g.x1 ? 'right' : 'left'; ctx.fillText(it.label, X(g.x2), Y(g.y2) - 5 * vr); }
+          else if (it.type === 'vline' && g.x1 != null) { ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(it.label, X(g.x1) + 5 * hr, 8 * vr); }
+          else if (it.type === 'rect' && g.x1 != null && g.x2 != null) { ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(it.label, X(Math.min(g.x1, g.x2)) + 5 * hr, Y(Math.min(g.y1, g.y2)) + 4 * vr); }
+          void tw;
         }
         if (sel) {
           ctx.setLineDash([]);

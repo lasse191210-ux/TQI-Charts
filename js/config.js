@@ -1,5 +1,5 @@
 // Grundeinstellungen, Coins, Vorlagen und Farbthemen.
-export const APP = { name: 'TQI Charts', version: '1.2.0', key: 'tqi-charts:v1' };
+export const APP = { name: 'TQI Charts', version: '1.3.0', key: 'tqi-charts:v1' };
 
 export const COINS = [
   ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['SOL', 'Solana'], ['XRP', 'XRP'], ['BNB', 'BNB'], ['DOGE', 'Dogecoin'],
@@ -58,7 +58,7 @@ export const DEFAULT_STATE = {
   tpo: { block: '30m', rowSize: 0, display: 'auto', colors: 'mono', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false },
   theme: 'light', candles: 'auto', tz: 'local', sessionOffsetMin: 0,
   session: { mode: 'utc', start: '02:00', end: '22:00', tz: 'Europe/Berlin' }, vaStep: 2,
-  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0, tplV: 0,
+  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0, tplV: 0, btV: 0,
   watchlist: ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE', 'SUI', 'LINK', 'AVAX', 'ADA', 'LTC'],
   favTfs: ['1m', '5m', '15m', '1h', '4h', '1D'],
   rightPanel: 'watch', rightOpen: true,

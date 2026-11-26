@@ -3,7 +3,7 @@ import { createChart, CandlestickSeries, BarSeries, LineSeries, AreaSeries, Hist
 import { APP, TEMPLATES, DEFAULT_STATE, THEMES, CANDLE_STYLES } from './config.js';
 import { MARKETS, fetchBars } from './exchanges.js';
 import { DataHub } from './datafeed.js';
-import { TYPES } from './indicators.js';
+import { TYPES, BT_AUTO } from './indicators.js';
 import { OverlayPrimitive, Scene } from './render/overlay.js';
 import { Drawings } from './render/drawings.js';
 import { TpoPaneView, buildTpoSessions } from './render/tpo.js';
@@ -64,7 +64,7 @@ export class App {
   /** Alte gespeicherte Stände anpassen (neue Farben, Session, Vorlagen). */
   migrate(saved) {
     const st = this.state;
-    if (!saved) { st.colorsV = 2; st.tplV = 2; return; }
+    if (!saved) { st.colorsV = 2; st.tplV = 2; st.btV = 2; return; }
     if ((saved.tplV || 0) < 2) {
       // Standard-Vorlage = Einstellung vom PC (26.11.). War sie aus Versehen in „Nur Key Levels“ (2. Vorlage) gebaut,
       // wird sie von dort 1:1 in die Standard-Vorlage verschoben und „Nur Key Levels“ wieder auf Werkseinstellung gesetzt.
@@ -88,6 +88,14 @@ export class App {
       if (st.template === 'bild') { st.indicators = list; delete st.tplState.bild; }
       else st.tplState.bild = list;
       st.tplV = 2;
+    }
+    if ((saved.btV || 0) < 2) {
+      // Big Trades wie ATAS: Auto-Filter „stark“, jede Order einzeln, graue Kreise ohne Zahl (alte Einstellung: viel zu viele Blasen)
+      const D = TYPES.bigtrades.defaults;
+      const fix = (ind) => { if (ind?.type === 'bigtrades') ind.s = { ...U.deepClone(D), hours: ind.s?.hours ?? D.hours }; };
+      for (const l of [st.indicators || [], ...Object.values(st.tplState || {}), ...(st.userTpls || []).map(t => t.list || [])]) for (const ind of l) fix(ind);
+      if (st.myDefaults?.bigtrades) delete st.myDefaults.bigtrades;
+      st.btV = 2;
     }
     if ((saved.colorsV || 0) < 2) {
       // zweifarbig (Schwarz/Grau, POC pink): Farben der Indikatoren auf die neuen Standardwerte setzen
@@ -479,6 +487,7 @@ export class App {
       ext: (k) => this.ext[k],
       bigTrades: (min) => this.bt.active ? this.bt.orders(min > 0 ? min : this.autoBigUsd()) : [],
       autoBig: () => this.autoBigUsd(),
+      avgMinVol: () => this.avgMinVol(),
       btInfo: () => this.bt.info(),
       options: (cur, maxAge) => this.opt.get(cur, maxAge),
       liqs: () => this.liqList,
@@ -515,9 +524,36 @@ export class App {
     const d = this.hub.stores.get(`${this.state.market}|${this.state.base}|1D`);
     return d && d.bars.length ? autoRowSize(d.bars) : U.niceStep((this.bars[this.bars.length - 1]?.c || 100) * 0.0005);
   }
+  /** Notwert, solange noch kein Durchschnittsvolumen bekannt ist (USD). */
   autoBigUsd() {
     const b = this.state.base;
-    return b === 'BTC' ? 200000 : b === 'ETH' ? 100000 : ['SOL', 'BNB', 'XRP'].includes(b) ? 50000 : 20000;
+    return b === 'BTC' ? 1500000 : b === 'ETH' ? 600000 : ['SOL', 'BNB', 'XRP'].includes(b) ? 200000 : 60000;
+  }
+  /** Durchschnittliches Volumen pro Minute (Coins) der letzten 24 Std. aus den Chart-Kerzen – Grundlage für den
+   *  Auto-Filter der Big Trades (wie ATAS: „Durchschnittsvolumen, Ausreißer markieren“). */
+  avgMinVol() {
+    const b = this.bars;
+    if (b.length < 2) return null;
+    const last = b[b.length - 1];
+    const key = `${this.state.market}|${this.state.base}|${this.state.tf}|${b.length}|${last.t}`;
+    if (this._amv?.key === key) return this._amv.v;
+    const step = U.tfMs(this.state.tf);
+    let v = 0, mins = 0;
+    if (step >= U.DAY) { const x = b[b.length - 2]; v = x.v; mins = step / U.MIN; }
+    else for (let i = b.length - 2; i >= 0 && b[i].t >= last.t - U.DAY; i--) { if (b[i].v > 0) { v += b[i].v; mins += step / U.MIN; } }
+    const res = mins > 0 && v > 0 ? v / mins : null;
+    this._amv = { key, v: res };
+    return res;
+  }
+  /** Aktuelle Big-Trades-Schwelle in USD (für das Trades-Tape und zum Merken der Orders). */
+  bigUsd() {
+    const ind = this.state.indicators.find(x => x.type === 'bigtrades');
+    const px = this.bars[this.bars.length - 1]?.c;
+    const amv = this.avgMinVol();
+    if (!ind || !px) return this.autoBigUsd();
+    const s = ind.s;
+    const q = s.auto ? (BT_AUTO[s.intensity] ?? BT_AUTO.strong) * (amv || 0) : +s.minVol || 0;
+    return q > 0 ? q * px : this.autoBigUsd();
   }
 
   recompute(force = false) {
@@ -971,7 +1007,10 @@ export class App {
     const ind = this.state.indicators.find(x => x.type === 'bigtrades' && x.visible);
     const key = `${this.state.market}|${this.state.base}`;
     if (ind && this.bars.length) {
-      this.bt.start(this.state.market, this.state.base, this.autoBigUsd() / 4);
+      // merken ab einem Viertel der kleinsten Auto-Schwelle (Schwach) bzw. der halben festen Mindestgröße
+      const px = this.bars[this.bars.length - 1].c, amv = this.avgMinVol();
+      const keep = Math.min(amv ? BT_AUTO.weak * amv * px / 4 : this.autoBigUsd() / 8, ind.s.auto ? Infinity : (+ind.s.minVol || 0) * px / 2 || Infinity);
+      this.bt.start(this.state.market, this.state.base, keep);
       const r = this.chart.timeScale().getVisibleLogicalRange();
       const i = r ? Math.max(0, Math.min(this.bars.length - 1, Math.floor(r.from))) : Math.max(0, this.bars.length - 100);
       this.bt.want(this.bars[i].t, this.btHours());
