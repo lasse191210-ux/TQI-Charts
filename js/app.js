@@ -9,6 +9,7 @@ import { Drawings } from './render/drawings.js';
 import { TpoPaneView, buildTpoSessions } from './render/tpo.js';
 import { BigTrades } from './bigtrades.js';
 import { OptionsData } from './options.js';
+import { Alerts } from './alerts.js';
 import { buildDayProfiles, autoRowSize, firstTouch } from './calc/profile.js';
 import { heikinAshi } from './calc/std.js';
 import * as U from './util.js';
@@ -25,6 +26,7 @@ export class App {
     if (saved && Array.isArray(saved.indicators)) this.state.indicators = saved.indicators.filter(x => TYPES[x.type]).map(x => ({ ...x, s: U.mergeDefaults(TYPES[x.type].defaults, x.s) }));
     if (!Array.isArray(this.state.indicators)) this.state.indicators = this.templateIndicators(this.state.template || 'bild');
     if (!MARKETS[this.state.market]) this.state.market = DEFAULT_STATE.market;
+    this.migrate(saved);
     // Handy: Legende anfangs eingeklappt (übersichtlich wie die TradingView-App)
     if (!saved && matchMedia('(max-width: 760px)').matches) this.state.legendOpen = false;
     this.hub = new DataHub();
@@ -51,6 +53,35 @@ export class App {
     this.bt.on('change', () => this._recompute());
     setInterval(() => this.bt.save(), 30000);
     window.addEventListener('pagehide', () => this.bt.save());
+    this.alerts = new Alerts(this);
+    this.tpoSel = null;
+    // Daten anderer Börsen (Indikator-Einstellung „Daten von“): alle 30 s abgleichen
+    setInterval(() => this.refreshFeeds(), 30000);
+  }
+
+  /** Alte gespeicherte Stände anpassen (neue Farben, Session, Vorlagen). */
+  migrate(saved) {
+    const st = this.state;
+    if (!saved) { st.colorsV = 2; return; }
+    if ((saved.colorsV || 0) < 2) {
+      // zweifarbig (Schwarz/Grau, POC pink): Farben der Indikatoren auf die neuen Standardwerte setzen
+      for (const ind of st.indicators || []) {
+        const T = TYPES[ind.type];
+        if (!T) continue;
+        for (const f of T.schema || []) {
+          for (const k of [f.t === 'color' ? f.k : null, typeof f.color === 'string' ? f.color : null]) if (k && k in T.defaults) ind.s[k] = T.defaults[k];
+        }
+        if (ind.type === 'keylevels') ind.s.lines = 'full';
+        if (ind.type === 'rvwap' && !ind.s.feed) ind.s.feed = 'bitstamp-spot';
+      }
+      if (st.template === 'bild') {
+        const tpo = st.indicators?.find(x => x.type === 'tpo');
+        if (tpo) tpo.visible = false;
+        if (!st.indicators?.some(x => x.type === 'sfp')) st.indicators?.push({ uid: U.uid(), type: 'sfp', visible: true, s: U.deepClone(TYPES.sfp.defaults) });
+      }
+      st.tpo = { ...st.tpo, colors: 'mono' };
+      st.colorsV = 2;
+    }
   }
 
   // ---------------------------------------------------------------- Start
@@ -91,6 +122,16 @@ export class App {
   get tpoBlockMs() { return U.tfMs(this.state.tpo.block); }
   get tz() { return this.state.tz === 'utc' ? 'UTC' : U.localTz(); }
   get offset() { return (this.state.sessionOffsetMin || 0) * U.MIN; }
+  /** Sessions für TPO / Key Levels (00:00 UTC, CME oder eigene Zeiten). */
+  get sess() {
+    const c = this.state.session || {};
+    const key = JSON.stringify([c.mode, c.start, c.end, c.tz, this.state.sessionOffsetMin]);
+    if (this._sessKey !== key) { this._sessKey = key; this._sess = new U.Sessions({ mode: c.mode, start: c.start, end: c.end, tz: c.tz, offset: this.offset }); }
+    return this._sess;
+  }
+  get vaStep() { return this.state.vaStep === 1 ? 1 : 2; }
+  /** Für Indikator-Titel: welche Börsen-Daten verfügbar sind. */
+  titleCtx() { const b = this.state.base; return { marketId: this.state.market, feedOk: (m) => !this._feedFailed?.has(`${m}|${b}`) }; }
   fmt(p, dec) { return U.fmtPrice(p, dec ?? this.priceDec); }
 
   saveState() { U.storage.set(APP.key, this.state); }
@@ -132,6 +173,12 @@ export class App {
       this.ui.updateLegend();
     });
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => this.onRange(r));
+    // TPO-Chart: Profil antippen → auswählen (zusammenfügen / teilen)
+    this.chart.subscribeClick((p) => {
+      if (!this.isTpo || !p || p.logical == null || !p.point) return;
+      if (this.drawings && (this.drawings.tool !== 'cursor' || this.drawings.sel)) return;
+      this.selectTpo(Math.round(p.logical));
+    });
     new ResizeObserver(() => this.ui.placePaneLegends()).observe(el);
   }
 
@@ -235,6 +282,8 @@ export class App {
     this.ext = { oi: null, funding: null };
     this.liqList = []; this.tape = []; this.fine.clear(); this.fineQueue = [];
     this.data.clear();
+    this.alerts?.reset();
+    this.tpoSel = null;
     for (const uid of [...this.panes.keys()]) this.removePane(uid);
     if (this.chartStoreOff) this.chartStoreOff();
     const st = this.hub.store(mk, base, tf);
@@ -313,23 +362,26 @@ export class App {
   async ensureNeeds() {
     const ctx = this.makeCtx();
     const req = new Map();
-    const add = (tf, from, count) => {
-      const r = req.get(tf) || { from: Infinity, count: 0 };
+    const add = (tf, from, count, market) => {
+      const key = (market && market !== this.state.market ? market : '') + '|' + tf;
+      const r = req.get(key) || { tf, market: market || null, from: Infinity, count: 0 };
       if (from != null) r.from = Math.min(r.from, from);
       if (count) r.count = Math.max(r.count, count);
-      req.set(tf, r);
+      req.set(key, r);
     };
     add('1D', null, 400);
+    for (const it of this.drawings?.items || []) if (it.type === 'ftpo') add(it.block || '30m', Math.min(it.pts[0].t, it.pts[1].t) - U.DAY, 0);
     for (const ind of this.state.indicators) {
       const T = TYPES[ind.type];
       if (!T || !T.needs) continue;
-      try { for (const n of T.needs(ind.s, ctx)) add(n.tf, n.from ?? null, n.count ?? 0); } catch (e) { console.error(e); }
+      try { for (const n of T.needs(ind.s, ctx)) add(n.tf, n.from ?? null, n.count ?? 0, n.market && MARKETS[n.market] ? n.market : null); } catch (e) { console.error(e); }
     }
     const { market: mk, base } = this.state;
     const seq = this.loadSeq;
     const jobs = [];
-    for (const [tf, r] of req) {
-      const st = this.hub.store(mk, base, tf);
+    for (const r of req.values()) {
+      const tf = r.tf;
+      const st = this.hub.store(r.market || mk, base, tf);
       jobs.push((async () => {
         try {
           if (!st.bars.length) {
@@ -338,7 +390,13 @@ export class App {
           }
           if (Number.isFinite(r.from)) await st.ensureFrom(r.from);
         } catch (e) {
-          console.warn('Daten', tf, e);
+          console.warn('Daten', r.market || mk, tf, e);
+          if (r.market && !st.bars.length) {
+            // Coin auf dieser Börse nicht vorhanden → Indikator rechnet mit den Chart-Daten
+            (this._feedFailed ||= new Set()).add(`${r.market}|${base}`);
+            this.ui.toast(`${MARKETS[r.market].label}: ${base} nicht verfügbar – Rolling VWAP rechnet mit den Chart-Daten`, 'info', 4000);
+            this.ui.renderLegend();
+          }
         }
       })());
     }
@@ -351,19 +409,28 @@ export class App {
   makeCtx() {
     const { market: mk, base, tf } = this.state;
     const app = this;
-    let profCache;
+    const profCache = new Map();
+    const sess = this.sess;
     const store = (t) => { const s = app.hub.stores.get(`${mk}|${base}|${t}`); return s && s.bars.length ? s : null; };
     return {
       bars: this.bars, tf, tfMs: U.tfMs(tf), now: Date.now(), offset: this.offset, isTpo: this.isTpo,
-      market: this.market, base, theme: this.theme, display: this.display,
+      market: this.market, marketId: mk, base, theme: this.theme, display: this.display,
+      sess, vaStep: this.vaStep,
       store,
+      /** Kerzen einer anderen Börse (gleicher Coin), z. B. für den Rolling VWAP „wie TradingView“. */
+      feedOk: (m) => !this._feedFailed?.has(`${m}|${base}`),
+      storeOf: (m, t) => { if (!m || m === mk) return store(t); const s = app.hub.stores.get(`${m}|${base}|${t}`); return s && s.bars.length ? s : null; },
       rowSize: () => this.rowSize(),
-      profiles: () => {
-        if (profCache !== undefined) return profCache;
+      profiles: (rs) => {
+        const r = rs > 0 ? rs : this.rowSize();
+        if (profCache.has(r)) return profCache.get(r);
         const m30 = store('30m');
-        profCache = m30 ? buildDayProfiles(m30.bars, { rowSize: this.rowSize(), offset: this.offset, now: Date.now() }) : null;
-        return profCache;
+        const p = m30 ? buildDayProfiles(m30.bars, { rowSize: r, sess, now: Date.now() }) : null;
+        profCache.set(r, p);
+        return p;
       },
+      /** Beginn der aktuellen (bzw. letzten) Session. */
+      sessStart: (t) => { const x = sess.last(t); return x ? x[0] : U.periodStart(t, 'day', this.offset); },
       idx: (t) => { if (!this.bars.length || t < this.bars[0].t) return null; return U.floorIndex(this.bars, t); },
       fine: (t0, t1, live) => this.fineBars(t0, t1, live),
       ext: (k) => this.ext[k],
@@ -380,21 +447,22 @@ export class App {
   /** TPO-Profile je Session berechnen, Achsen-Labels und Naked POCs ergänzen. */
   updateTpo(scene, ctx) {
     const o = this.state.tpo;
-    const sessions = buildTpoSessions(this.bars, { rowSize: this.tpoRowSize(), offset: this.offset, blockMs: this.tpoBlockMs, vaPct: o.vaPct, ibMin: o.ibMin });
+    const ed = this.tpoEdits();
+    const sessions = buildTpoSessions(this.bars, { rowSize: this.tpoRowSize(), sess: this.sess, blockMs: this.tpoBlockMs, vaPct: o.vaPct, ibMin: o.ibMin, step: this.vaStep, merges: ed.merges, splits: ed.splits });
     this.tpoSessions = sessions;
     this.tpoView.setSessions(sessions, o);
     const cur = sessions[sessions.length - 1];
     const th = this.theme;
     if (cur) {
       if (o.poc && cur.poc != null) scene.axisLabel(cur.poc, null, '#e91e63', '#fff');
-      if (o.va && cur.vah != null) { scene.axisLabel(cur.vah, null, th.dark ? '#6d4fc2' : '#7c3aed', '#fff'); scene.axisLabel(cur.val, null, th.dark ? '#6d4fc2' : '#7c3aed', '#fff'); }
+      if (o.va && cur.vah != null) { scene.axisLabel(cur.vah, null, th.dark ? '#d1d4dc' : '#131722', th.dark ? '#131722' : '#fff'); scene.axisLabel(cur.val, null, th.dark ? '#d1d4dc' : '#131722', th.dark ? '#131722' : '#fff'); }
     }
     if (o.nakedPoc) {
       const done = sessions.slice(Math.max(0, sessions.length - 41), -1);
       for (const s of done) {
         if (s.poc == null || s.n < 4) continue;
         if (firstTouch(this.bars, s.end, s.poc, s.poc) != null) continue;
-        scene.level({ p: s.poc, from: s.start, color: 'rgba(220,40,40,0.85)', dash: 'dashed', label: 'nPOC ' + U.fmtDayLabel(s.start), lc: '#dc2828' });
+        scene.level({ p: s.poc, from: s.start, color: 'rgba(233,30,99,0.85)', dash: 'dashed', label: 'nPOC ' + U.fmtDayLabel(s.day0 ?? s.start), lc: '#e91e63' });
       }
     }
   }
@@ -506,6 +574,7 @@ export class App {
   // ---------------------------------------------------------------- Live
   onTrade(tr) {
     if (this.bt.active) this.bt.onTrade(tr);
+    this.alerts.check(tr.p);
     // Tape und große Trades (gleicher Zeitstempel + Seite = eine Marktorder)
     const usd = tr.p * tr.q;
     const last = this.tape[this.tape.length - 1];
@@ -600,6 +669,84 @@ export class App {
     } finally { this._finePumping = false; }
   }
 
+  /** Speicher anderer Börsen (für „Daten von“) per REST auffrischen. */
+  refreshFeeds() {
+    if (document.visibilityState !== 'visible') return;
+    const { market: mk, base } = this.state;
+    const list = [...this.hub.stores.values()].filter(s => s.base === base && s.marketId !== mk && s.bars.length);
+    if (!list.length) return;
+    (async () => {
+      for (const s of list) { try { await s.resyncTail(3); } catch { /* später */ } await U.sleep(200); }
+      this._recompute();
+    })();
+  }
+
+  // ---------------------------------------------------------------- TPO-Chart: Profile zusammenfügen / teilen (wie MMT)
+  tpoEdits() {
+    const k = `${this.state.market}|${this.state.base}`;
+    const e = this.state.tpoEdits?.[k];
+    return e ? { merges: e.merges || [], splits: e.splits || [] } : { merges: [], splits: [] };
+  }
+  setTpoEdits(e) {
+    const k = `${this.state.market}|${this.state.base}`;
+    this.state.tpoEdits = { ...(this.state.tpoEdits || {}), [k]: { merges: e.merges, splits: e.splits } };
+    if (!e.merges.length && !e.splits.length) delete this.state.tpoEdits[k];
+    this._save();
+    this.recompute(true);
+    this.ui.renderTpoBar();
+  }
+  tpoLabel(s) {
+    const day = (t) => { const x = this.sess.of(t) || this.sess.last(t); return U.fmtDayLabel(x ? x[2] : t); };
+    const sx = this.sess.of(s.start);
+    const t = (x) => U.fmtTime(x, this.tz);
+    if (s.merged) return `${day(s.start)}–${day(s.end - 1)}`;
+    if (sx && (s.start !== sx[0] || s.end !== sx[1])) return `${day(s.start)} ${t(s.start)}–${t(s.end)}`;
+    return day(s.start);
+  }
+  tpoSessionAt(i) { return (this.tpoSessions || []).find(s => i >= s.first && i < s.first + s.n) || null; }
+  selectTpo(i) {
+    const s = i == null ? null : this.tpoSessionAt(i);
+    this.tpoSel = s && this.tpoSel !== s.start ? s.start : null;
+    this.tpoClickT = s ? this.bars[Math.max(0, Math.min(this.bars.length - 1, i))].t : null;
+    this.ui.renderTpoBar();
+    this.recompute(true);
+  }
+  mergeTpo(dir) {
+    const list = this.tpoSessions || [];
+    const k = list.findIndex(s => s.start === this.tpoSel);
+    const nb = list[k + dir];
+    if (k < 0 || !nb) { this.ui.toast('Kein ' + (dir < 0 ? 'vorheriges' : 'nächstes') + ' Profil', 'info', 1800); return; }
+    const a = list[k];
+    let lo = Math.min(a.start, nb.start), hi = Math.max(a.end, nb.end);
+    const e = this.tpoEdits();
+    const keep = [];
+    for (const m of e.merges) { if (m[1] > lo && m[0] < hi) { lo = Math.min(lo, m[0]); hi = Math.max(hi, m[1]); } else keep.push(m); }
+    keep.push([lo, hi]);
+    this.tpoSel = lo;
+    this.setTpoEdits({ merges: keep, splits: e.splits });
+  }
+  unmergeTpo() {
+    const e = this.tpoEdits();
+    const merges = e.merges.filter(m => m[0] !== this.tpoSel);
+    if (merges.length === e.merges.length) { this.ui.toast('Dieses Profil ist nicht zusammengefügt', 'info', 1800); return; }
+    this.setTpoEdits({ merges, splits: e.splits });
+  }
+  splitTpo() {
+    const t = this.tpoClickT;
+    const s = (this.tpoSessions || []).find(x => x.start === this.tpoSel);
+    if (t == null || !s || t <= s.start) { this.ui.toast('Tippe zuerst auf die Stelle im Profil, an der geteilt werden soll', 'info', 2500); return; }
+    const q = Math.floor(t / this.tpoBlockMs) * this.tpoBlockMs;
+    const e = this.tpoEdits();
+    const merges = [];
+    for (const m of e.merges) { if (q > m[0] && q < m[1]) { merges.push([m[0], q], [q, m[1]]); } else merges.push(m); }
+    const sx = this.sess.of(q);
+    const inDay = sx && q > sx[0];
+    const splits = inDay && !e.splits.includes(q) ? [...e.splits, q] : e.splits;
+    this.tpoSel = q;
+    this.setTpoEdits({ merges: merges.filter(m => m[1] > m[0]), splits });
+  }
+  resetTpoEdits() { this.tpoSel = null; this.setTpoEdits({ merges: [], splits: [] }); }
+
   // ---------------------------------------------------------------- Indikatoren verwalten
   addIndicator(type, opts = {}) {
     const T = TYPES[type];
@@ -637,11 +784,58 @@ export class App {
     if (TYPES[x.type].pane === 'own') this.removePane(uid);
     this.afterIndicatorChange(true);
   }
+  /** Vorlage wechseln. Der Stand der bisherigen Vorlage wird gemerkt und beim Zurückwechseln wiederhergestellt. */
   applyTemplate(key) {
+    const st = this.state;
+    st.tplState ||= {};
+    const prev = st.template;
+    if (prev) st.tplState[prev] = U.deepClone(st.indicators);
     for (const uid of [...this.panes.keys()]) this.removePane(uid);
-    this.state.template = key;
-    this.state.indicators = this.templateIndicators(key);
+    st.template = key;
+    const user = (st.userTpls || []).find(t => t.id === key);
+    const saved = st.tplState[key];
+    const fix = (list) => list.filter(x => TYPES[x.type]).map(x => ({ ...x, uid: x.uid || U.uid(), s: U.mergeDefaults(TYPES[x.type].defaults, x.s) }));
+    if (saved) st.indicators = fix(U.deepClone(saved));
+    else if (user) st.indicators = fix(U.deepClone(user.list)).map(x => ({ ...x, uid: U.uid() }));
+    else st.indicators = this.templateIndicators(key);
     this.afterIndicatorChange(true);
+    const chartOf = (k) => (st.userTpls || []).find(t => t.id === k)?.chart || TEMPLATES[k]?.chart || null;
+    if (chartOf(key) === 'tpo' && !this.isTpo) this.setChartType('tpo');
+    else if (chartOf(prev) === 'tpo' && chartOf(key) !== 'tpo' && this.isTpo) this.toggleTpo();
+  }
+  /** Aktuelle Indikatoren als eigene Vorlage sichern (oder eine eigene Vorlage überschreiben). */
+  saveUserTemplate(name, id = null) {
+    const st = this.state;
+    st.userTpls ||= [];
+    const list = U.deepClone(st.indicators);
+    let t = id && st.userTpls.find(x => x.id === id);
+    if (t) { t.list = list; t.name = name || t.name; t.chart = this.isTpo ? 'tpo' : null; }
+    else { t = { id: 'u' + U.uid(), name: name || 'Meine Vorlage', list, chart: this.isTpo ? 'tpo' : null }; st.userTpls.push(t); }
+    st.tplState ||= {};
+    delete st.tplState[t.id];
+    st.template = t.id;
+    this._save();
+    this.ui.renderAll();
+    return t;
+  }
+  deleteUserTemplate(id) {
+    const st = this.state;
+    st.userTpls = (st.userTpls || []).filter(t => t.id !== id);
+    if (st.tplState) delete st.tplState[id];
+    if (st.template === id) st.template = null;
+    this._save();
+  }
+  /** Aktuelle Vorlage auf den Ursprung zurücksetzen (eigene Vorlage: gespeicherter Stand, sonst Werkseinstellung). */
+  resetTemplate() {
+    const st = this.state;
+    const key = st.template || 'bild';
+    if (st.tplState) delete st.tplState[key];
+    st.template = null;
+    this.applyTemplate(key);
+    if (st.tplState) delete st.tplState[key];
+  }
+  templateName(key = this.state.template) {
+    return (this.state.userTpls || []).find(t => t.id === key)?.name || TEMPLATES[key]?.name || 'Eigene Einstellungen';
   }
   afterIndicatorChange(needData = false) {
     this._save();
@@ -718,11 +912,13 @@ export class App {
     if (this.isTpo) {
       const perDay = Math.round(U.DAY / this.tpoBlockMs);
       const last = this.bars[this.bars.length - 1];
-      const done = last ? Math.floor((last.t - U.periodStart(last.t, 'day', this.offset)) / this.tpoBlockMs) + 1 : 0;
+      const sx = last ? this.sess.last(last.t) : null;
+      const s0 = sx ? sx[0] : (last ? U.periodStart(last.t, 'day', this.offset) : 0);
+      const done = last ? Math.floor((last.t - s0) / this.tpoBlockMs) + 1 : 0;
       ts.applyOptions({ barSpacing: this.ui.mobile ? 7 : 10, rightOffset: Math.max(6, Math.min(perDay + 2, perDay - done + 3)), minBarSpacing: 0.5 });
       // Ansicht: aktuelle Session ganz (Desktop zusätzlich die vorherige)
       if (last) {
-        const start = U.lowerBound(this.bars, U.periodStart(last.t, 'day', this.offset));
+        const start = U.lowerBound(this.bars, s0);
         requestAnimationFrame(() => ts.setVisibleLogicalRange({ from: start - (this.ui.mobile ? 1.5 : perDay + 1), to: start + perDay + 1.5 }));
       }
     } else ts.applyOptions({ barSpacing: 7, rightOffset: 12 });

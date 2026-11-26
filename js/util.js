@@ -107,6 +107,105 @@ export function periodPrev(start, kind, offset = 0) {
   return periodStart(start - 1, kind, offset);
 }
 
+// ---------- Sessions (TPO, Key Levels, Naked Levels) ----------
+const _zdtf = new Map();
+function zParts(tz, t) {
+  let f = _zdtf.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    _zdtf.set(tz, f);
+  }
+  const o = {};
+  for (const p of f.formatToParts(t)) if (p.type !== 'literal') o[p.type] = +p.value;
+  if (o.hour === 24) o.hour = 0;
+  return o;
+}
+/** Abstand Ortszeit − UTC in ms zum Zeitpunkt t. */
+export function tzOffsetMs(tz, t) {
+  const p = zParts(tz, t);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(t / 1000) * 1000;
+}
+/** Ortszeit (Kalendertag + Uhrzeit in tz) → UTC-ms. */
+export function zonedTime(tz, y, mo, d, h, mi) {
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  let t = guess - tzOffsetMs(tz, guess);
+  const o2 = tzOffsetMs(tz, t);
+  if (guess - o2 !== t) t = guess - o2;
+  return t;
+}
+export const SESSION_MODES = [
+  ['utc', '00:00 UTC (wie TradingView Krypto)'],
+  ['cme', 'CME-Session (17:00–16:00 Chicago, ohne Wochenende)'],
+  ['custom', 'eigene Zeiten (z. B. 02:00–22:00 Berlin)'],
+];
+const hmOf = (s) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim()); return m ? [Math.min(23, +m[1]), Math.min(59, +m[2])] : null; };
+
+/**
+ * Handels-Sessions. utc: Tag ab 00:00 UTC (+ offset). cme: 17:00–16:00 America/Chicago, Mo–Fr.
+ * custom: start–end in Zeitzone tz (Ende ≤ Start = über Mitternacht). Kerzen außerhalb gehören zu keiner Session.
+ * of(t) → [start, end, tradeDay] (tradeDay = UTC-Mitternacht des Handelstags, für Wochen/Monate).
+ */
+export class Sessions {
+  constructor({ mode = 'utc', start = '02:00', end = '22:00', tz = 'Europe/Berlin', offset = 0 } = {}) {
+    this.mode = ['utc', 'cme', 'custom'].includes(mode) ? mode : 'utc';
+    this.offset = this.mode === 'utc' ? offset : 0;
+    this.tz = this.mode === 'cme' ? 'America/Chicago' : (tz || 'Europe/Berlin');
+    try { zParts(this.tz, 0); } catch { this.tz = 'Europe/Berlin'; }
+    this.s = this.mode === 'cme' ? [17, 0] : (hmOf(start) || [2, 0]);
+    this.e = this.mode === 'cme' ? [16, 0] : (hmOf(end) || [22, 0]);
+    this.key = this.mode === 'utc' ? 'utc' + this.offset : `${this.mode}|${this.tz}|${this.s}|${this.e}`;
+    this._cache = new Map();
+  }
+  get isUtc() { return this.mode === 'utc'; }
+  _day(D) {
+    let r = this._cache.get(D);
+    if (r) return r;
+    r = [];
+    const sMin = this.s[0] * 60 + this.s[1], eMin = this.e[0] * 60 + this.e[1];
+    const overnight = eMin <= sMin;
+    for (let k = -1; k <= 1; k++) {
+      const p = zParts(this.tz, (D + k) * DAY + 12 * HOUR);
+      const st = zonedTime(this.tz, p.year, p.month, p.day, this.s[0], this.s[1]);
+      const de = new Date(Date.UTC(p.year, p.month - 1, p.day + (overnight ? 1 : 0)));
+      const en = zonedTime(this.tz, de.getUTCFullYear(), de.getUTCMonth() + 1, de.getUTCDate(), this.e[0], this.e[1]);
+      if (!(en > st)) continue;
+      const tradeDay = Math.floor((st + en) / 2 / DAY) * DAY;
+      if (this.mode === 'cme') { const wd = new Date(tradeDay).getUTCDay(); if (wd === 0 || wd === 6) continue; }
+      if (en > D * DAY && st < (D + 1) * DAY) r.push([st, en, tradeDay]);
+    }
+    r.sort((a, b) => a[0] - b[0]);
+    this._cache.set(D, r);
+    return r;
+  }
+  /** Session, die t enthält: [start, end, tradeDay] oder null (außerhalb). */
+  of(t) {
+    if (this.mode === 'utc') { const s = periodStart(t, 'day', this.offset); return [s, s + DAY, Math.floor((s + DAY / 2) / DAY) * DAY]; }
+    for (const x of this._day(Math.floor(t / DAY))) if (t >= x[0] && t < x[1]) return x;
+    return null;
+  }
+  /** Letzte Session, die bis t begonnen hat (auch wenn t danach außerhalb liegt). */
+  last(t) {
+    if (this.mode === 'utc') return this.of(t);
+    for (let D = Math.floor(t / DAY), k = 0; k < 6; k++, D--) {
+      const l = this._day(D);
+      for (let i = l.length - 1; i >= 0; i--) if (l[i][0] <= t) return l[i];
+    }
+    return null;
+  }
+  /** Start der n-ten Session vor der aktuellen (0 = aktuelle/letzte). */
+  back(t, n) {
+    let cur = this.last(t);
+    for (let i = 0; i < n && cur; i++) cur = this.last(cur[0] - 1);
+    return cur ? cur[0] : t - (n + 1) * DAY;
+  }
+  label() {
+    if (this.mode === 'utc') return this.offset ? `Tag ab ${this.offset > 0 ? '+' : ''}${Math.round(this.offset / MIN)} Min. UTC` : '00:00 UTC';
+    if (this.mode === 'cme') return 'CME 17:00–16:00 Chicago';
+    const f = (x) => String(x[0]).padStart(2, '0') + ':' + String(x[1]).padStart(2, '0');
+    return `${f(this.s)}–${f(this.e)} ${this.tz.split('/').pop().replace('_', ' ')}`;
+  }
+}
+
 /** Erster Index i mit arr[i].t >= t (binäre Suche). */
 export function lowerBound(arr, t) {
   let lo = 0, hi = arr.length;
@@ -268,7 +367,9 @@ export function mergeDefaults(defaults, saved) {
   for (const k of Object.keys(out)) {
     if (!(k in saved)) continue;
     const d = out[k], v = saved[k];
-    if (d && typeof d === 'object' && !Array.isArray(d)) out[k] = mergeDefaults(d, v);
+    // leeres Objekt als Standard = freie Zuordnung (z. B. eigene Standardwerte, Vorlagen-Stände): gespeichert übernehmen
+    if (d && typeof d === 'object' && !Array.isArray(d) && !Object.keys(d).length) out[k] = v && typeof v === 'object' && !Array.isArray(v) ? deepClone(v) : d;
+    else if (d && typeof d === 'object' && !Array.isArray(d)) out[k] = mergeDefaults(d, v);
     else if (Array.isArray(d)) out[k] = Array.isArray(v) ? v : d;
     else if (typeof d === typeof v) out[k] = v;
   }
@@ -285,6 +386,15 @@ export function rgba(hex, a = 1) {
   // #rrggbbaa: eingebaute Deckkraft (aus dem Farbwähler) mit a multiplizieren
   const al = h.length === 8 ? a * (parseInt(h.slice(6, 8), 16) / 255) : a;
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, +al.toFixed(3)))})`;
+}
+/** Zweifarbig wie gewünscht: Schwarz (Linien, Verkauf/Short), Grau (Kauf/Long, Flächen), POC pink. */
+export const INK = '#131722', INK2 = '#787b86', POC = '#e91e63';
+/** Im dunklen Design wird Schwarz (#131722 / rgba(19,23,34,…)) zu hellem Grau, damit Linien sichtbar bleiben. */
+export function inkMap(c, dark) {
+  if (!dark || typeof c !== 'string') return c;
+  if (/^#131722/i.test(c)) return '#d1d4dc' + c.slice(7);
+  if (c.startsWith('rgba(19,23,34,')) return 'rgba(209,212,220,' + c.slice(14);
+  return c;
 }
 /** Farbe für Stellen, die kein #rrggbbaa verstehen (Chart-Bibliothek). */
 export function cssColor(c) { return typeof c === 'string' && /^#[0-9a-f]{8}$/i.test(c) ? rgba(c) : c; }

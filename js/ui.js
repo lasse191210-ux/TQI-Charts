@@ -5,7 +5,8 @@ import { TOOLS, COLORS } from './render/drawings.js';
 import { TYPES, REGISTRY, CATEGORIES } from './indicators.js';
 import { MARKETS } from './exchanges.js';
 import { APP, COINS, COIN_NAME, TEMPLATES, CANDLE_STYLES } from './config.js';
-import { TIMEFRAMES, fmtPrice, fmtPct, fmtCompact, fmtTime, tzOffsetLabel, escapeHtml as esc, nf, deepClone, mergeDefaults, niceStep, periodStart, cssColor, splitColor, joinColor, mixHex } from './util.js';
+import { ALERT_CONDS } from './alerts.js';
+import { TIMEFRAMES, fmtPrice, fmtPct, fmtCompact, fmtTime, fmtDateTime, tzOffsetLabel, escapeHtml as esc, nf, deepClone, mergeDefaults, niceStep, periodStart, cssColor, splitColor, joinColor, mixHex, SESSION_MODES } from './util.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -115,7 +116,7 @@ export class UI {
   renderTools() {
     const a = this.app, st = a.state;
     const tool = a.drawings?.tool || 'cursor';
-    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['avwap', 'fvp', 'rect', 'fib', 'measure', 'text'], ['long', 'short']];
+    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['avwap', 'fvp', 'ftpo', 'rect', 'fib', 'measure', 'text'], ['long', 'short'], ['alert']];
     let html = groups.map(g => g.map(t => `<button class="tool ${t === tool ? 'on' : ''}" data-tool="${t}" title="${TOOLS.find(x => x[0] === t)[1]}">${ICON[TOOL_ICON[t]]}</button>`).join('')).join('<div class="tsep"></div>');
     html += '<div class="tsep"></div>';
     html += `<button class="tool ${st.magnet ? 'on' : ''}" data-tt="magnet" title="Magnet (an Kerzen einrasten)">${ICON.magnet}</button>`;
@@ -136,12 +137,13 @@ export class UI {
   onTool(t) {
     this.drawLayer.classList.toggle('on', t !== 'cursor');
     $$('#tools [data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
-    if (this.mobile && t !== 'cursor') this.toast(t === 'hline' || t === 'hray' || t === 'vline' || t === 'text' || t === 'long' || t === 'short' ? 'Tippe auf den Chart' : 'Tippe Startpunkt, dann Endpunkt', 'info', 1800);
+    if (this.mobile && t !== 'cursor') this.toast(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap'].includes(t) ? 'Tippe auf den Chart' : t === 'alert' ? 'Tippe auf den Preis für den Alarm' : 'Tippe Startpunkt, dann Endpunkt', 'info', 1800);
   }
   onDrawingSelect(sel) {
     const bar = $('#selbar');
     if (!sel) { bar.classList.remove('on'); bar.innerHTML = ''; return; }
     const isPos = sel.type === 'long' || sel.type === 'short';
+    if (sel.type === 'alert' || sel.type === 'ftpo') { this._selbarSpecial(bar, sel); return; }
     bar.innerHTML = (isPos ? '' : COLORS.map(c => `<button class="sw ${sel.color === c ? 'on' : ''}" data-c="${c}" style="--c:${c}"></button>`).join('') + '<span class="vsep"></span>' +
       [1, 2, 3].map(w => `<button class="wbtn ${sel.width === w ? 'on' : ''}" data-w="${w}"><i style="height:${w}px"></i></button>`).join('')) +
       (sel.type === 'fib' ? `<button class="tb ${sel.ext ? 'on' : ''}" data-ext="1" title="nach rechts verlängern">→</button>` : '') +
@@ -155,6 +157,85 @@ export class UI {
     $('[data-bands]', bar)?.addEventListener('click', () => { sel.bands = ((sel.bands || 0) + 1) % 4; d._changed(); });
     $('[data-src]', bar)?.addEventListener('click', () => { const l = ['hlc3', 'ohlc4', 'close']; sel.src = l[(l.indexOf(sel.src || 'hlc3') + 1) % l.length]; d._changed(); });
     $('[data-del]', bar).onclick = () => d.remove(sel);
+  }
+
+  /** Auswahlleiste für Alarm-Linien und Fixed Range TPO. */
+  _selbarSpecial(bar, sel) {
+    const d = this.app.drawings;
+    if (sel.type === 'alert') {
+      const cond = ALERT_CONDS.find(c => c[0] === (sel.cond || 'cross')) || ALERT_CONDS[0];
+      bar.innerHTML = `<span class="sb-t">🔔 ${esc(this.app.fmt(sel.pts[0].p))}</span><button class="tb" data-cond="1" title="Bedingung">${cond[1]}</button>` +
+        (sel.fired ? `<button class="tb" data-arm="1" title="Wieder scharf schalten">wieder aktivieren</button>` : '') +
+        `<button class="tb" data-note="1" title="Notiz">Notiz</button><button class="tb" data-list="1">alle Alarme</button><span class="vsep"></span><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
+      $('[data-cond]', bar).onclick = () => { const k = ALERT_CONDS.findIndex(c => c[0] === (sel.cond || 'cross')); sel.cond = ALERT_CONDS[(k + 1) % ALERT_CONDS.length][0]; sel.fired = null; d._changed(); };
+      $('[data-arm]', bar)?.addEventListener('click', () => { sel.fired = null; d._changed(); });
+      $('[data-note]', bar).onclick = () => { const t = prompt('Notiz zum Alarm', sel.note || ''); if (t != null) { sel.note = t.trim(); d._changed(); } };
+      $('[data-list]', bar).onclick = () => this.openAlerts();
+    } else {
+      bar.innerHTML = `<span class="sb-t">TPO</span><button class="tb" data-mode="1" title="Darstellung">${sel.mode === 'blocks' ? 'Blöcke' : 'Buchstaben'}</button>` +
+        `<button class="tb" data-block="1" title="Zeit pro Buchstabe">${sel.block || '30m'}</button><button class="tb" data-va="1" title="Value Area">VA ${sel.vaPct || 68} %</button>` +
+        `<button class="tb ${sel.clip ? 'on' : ''}" data-clip="1" title="Nur im gezogenen Preisbereich zählen">Preisbereich</button><span class="vsep"></span><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
+      $('[data-mode]', bar).onclick = () => { sel.mode = sel.mode === 'blocks' ? 'letters' : 'blocks'; d._changed(); };
+      $('[data-block]', bar).onclick = () => { const l = ['5m', '15m', '30m', '1h']; sel.block = l[(l.indexOf(sel.block || '30m') + 1) % l.length]; d._changed(); this.app.ensureNeeds(); };
+      $('[data-va]', bar).onclick = () => { const l = [68, 70, 80]; sel.vaPct = l[(l.indexOf(sel.vaPct || 68) + 1) % l.length]; d._changed(); };
+      $('[data-clip]', bar).onclick = () => { sel.clip = !sel.clip; d._changed(); };
+    }
+    $('[data-del]', bar).onclick = () => d.remove(sel);
+    bar.classList.add('on');
+  }
+
+  /** Liste aller Alarme (aktueller Coin). */
+  openAlerts() {
+    const a = this.app, al = a.alerts;
+    const list = al.list().sort((x, y) => y.pts[0].p - x.pts[0].p);
+    const perm = al.permission;
+    const body = el(`<div class="setdlg"><div class="alert-list">${list.length ? list.map(it => `<div class="al-row ${it.fired ? 'fired' : ''}" data-id="${it.id}"><b>${esc(a.fmt(it.pts[0].p))}</b><span>${esc((ALERT_CONDS.find(c => c[0] === (it.cond || 'cross')) || ALERT_CONDS[0])[1])}${it.note ? ' · ' + esc(it.note) : ''}</span><span class="muted">${it.fired ? 'ausgelöst ' + esc(fmtDateTime(it.fired, a.tz)) : 'aktiv'}</span>${it.fired ? '<button class="tb" data-arm>aktivieren</button>' : ''}<button class="tb icon" data-del title="Löschen">${ICON.trash}</button></div>`).join('') : '<div class="muted pad">Noch keine Alarme. Werkzeug „Alarm“ (Glocke) wählen und auf den Preis tippen.</div>'}</div>
+      <div class="info-box">Alarme werden geprüft, solange die Seite offen ist (Handy: im Vordergrund). Ton und Vibration bei Auslösung${perm === 'granted' ? ', System-Benachrichtigung ist erlaubt.' : perm === 'denied' ? '. System-Benachrichtigungen sind im Browser blockiert.' : '.'}</div>
+      <div class="dlg-foot">${perm === 'default' ? '<button class="tb" id="alPerm">Benachrichtigungen erlauben</button>' : ''}<button class="tb" id="alNew">${ICON.alert}<span>Alarm beim aktuellen Kurs</span></button><div class="grow"></div><button class="tb primary" id="alOk">Fertig</button></div></div>`);
+    const close = this.modal('Alarme · ' + a.market.ticker(a.state.base), body);
+    $$('.al-row', body).forEach(row => {
+      const it = list.find(x => x.id === row.dataset.id);
+      $('[data-del]', row).onclick = () => { a.drawings.remove(it); close(); this.openAlerts(); };
+      $('[data-arm]', row)?.addEventListener('click', () => { it.fired = null; a.drawings._changed(); close(); this.openAlerts(); });
+    });
+    $('#alPerm', body)?.addEventListener('click', () => { al.askPermission(); setTimeout(() => { close(); this.openAlerts(); }, 1500); });
+    $('#alNew', body).onclick = () => {
+      const last = a.bars[a.bars.length - 1];
+      if (!last) return;
+      const v = prompt('Alarm bei Preis', String(Math.round(last.c * 100) / 100).replace('.', ','));
+      if (v == null) return;
+      const p = parseFloat(String(v).replace(/\./g, '').replace(',', '.'));
+      if (!(p > 0)) { this.toast('Ungültiger Preis', 'error'); return; }
+      const it = a.drawings._create('alert', { t: last.t, p });
+      it.cond = p > last.c ? 'up' : 'down';
+      a.drawings._finish(it);
+      close(); this.openAlerts();
+    };
+    $('#alOk', body).onclick = close;
+  }
+
+  /** TPO-Chart: Leiste für das ausgewählte Profil (zusammenfügen / teilen wie MMT). */
+  renderTpoBar() {
+    const a = this.app;
+    let bar = $('#tpoBar');
+    if (!bar) { bar = el('<div id="tpoBar" class="tpo-bar"></div>'); $('#chartwrap').appendChild(bar); }
+    const s = a.isTpo && a.tpoSel != null ? (a.tpoSessions || []).find(x => x.start === a.tpoSel) : null;
+    if (!s) { bar.classList.remove('on'); bar.innerHTML = ''; return; }
+    const ed = a.tpoEdits();
+    const merged = ed.merges.some(m => m[0] === s.start);
+    bar.innerHTML = `<span class="sb-t">${esc(a.tpoLabel(s))}</span>
+      <button class="tb" data-m="-1" title="Mit dem Profil links zusammenfügen">${ICON.merge}<span>◀ zusammen</span></button>
+      <button class="tb" data-m="1" title="Mit dem Profil rechts zusammenfügen">${ICON.merge}<span>zusammen ▶</span></button>
+      <button class="tb" data-split title="An der angetippten Stelle teilen">${ICON.split}<span>hier teilen</span></button>
+      ${merged ? '<button class="tb" data-unmerge>trennen</button>' : ''}
+      ${ed.merges.length || ed.splits.length ? '<button class="tb" data-reset title="Alle Änderungen an den Profilen zurücksetzen">alle zurück</button>' : ''}
+      <button class="tb icon" data-x title="Schließen">${ICON.close}</button>`;
+    $$('[data-m]', bar).forEach(b => b.onclick = () => a.mergeTpo(+b.dataset.m));
+    $('[data-split]', bar).onclick = () => a.splitTpo();
+    $('[data-unmerge]', bar)?.addEventListener('click', () => a.unmergeTpo());
+    $('[data-reset]', bar)?.addEventListener('click', () => a.resetTpoEdits());
+    $('[data-x]', bar).onclick = () => { a.tpoSel = null; this.renderTpoBar(); a.recompute(true); };
+    bar.classList.add('on');
   }
 
   // ================================================================ Legende
@@ -178,7 +259,7 @@ export class UI {
   legendRow(x) {
     const T = TYPES[x.type];
     return `<div class="lg-row lg-ind ${x.visible ? '' : 'off'}" data-uid="${x.uid}">
-      <span class="lg-title">${esc(T.title(x.s))}</span>
+      <span class="lg-title">${esc(T.title(x.s, this.app.titleCtx()))}</span>
       <span class="lg-vals" data-vals></span>
       <span class="lg-acts">
         <button data-act="eye" title="${x.visible ? 'Ausblenden' : 'Einblenden'}">${x.visible ? ICON.eye : ICON.eyeOff}</button>
@@ -237,7 +318,7 @@ export class UI {
     const box = $('#paneLegends');
     const list = a.state.indicators.filter(x => TYPES[x.type].pane === 'own');
     box.innerHTML = list.map(x => `<div class="plg ${x.visible ? '' : 'off'}" data-uid="${x.uid}">
-      <span class="lg-title">${esc(TYPES[x.type].title(x.s))}</span><span class="lg-vals" data-vals></span>
+      <span class="lg-title">${esc(TYPES[x.type].title(x.s, this.app.titleCtx()))}</span><span class="lg-vals" data-vals></span>
       <span class="lg-acts"><button data-act="eye">${x.visible ? ICON.eye : ICON.eyeOff}</button><button data-act="set">${ICON.gear}</button><button data-act="del">${ICON.close}</button></span></div>`).join('');
     this.placePaneLegends();
   }
@@ -535,6 +616,7 @@ export class UI {
       <div id="mPanel" class="mpanel"></div>
       <div class="sec-t">Mehr</div>
       <button class="row-btn" data-k="tpl">${ICON.grid}<span>Vorlagen</span></button>
+      <button class="row-btn" data-k="alerts">${ICON.alert}<span>Alarme</span><b>${a.alerts.list().filter(x => !x.fired).length || ''}</b></button>
       <button class="row-btn" data-k="theme">${st.theme === 'dark' ? ICON.sun : ICON.moon}<span>${st.theme === 'dark' ? 'Helles Design' : 'Dunkles Design'}</span></button>
       <button class="row-btn" data-k="shot">${ICON.camera}<span>Screenshot speichern</span></button>
       <button class="row-btn" data-k="set">${ICON.gear}<span>Einstellungen</span></button>
@@ -566,6 +648,7 @@ export class UI {
       const k = b.dataset.k;
       close();
       if (k === 'tpl') this.openTemplateSheet();
+      if (k === 'alerts') this.openAlerts();
       if (k === 'theme') a.setTheme(st.theme === 'dark' ? 'light' : 'dark');
       if (k === 'shot') a.screenshot();
       if (k === 'set') this.openSettings();
@@ -613,9 +696,32 @@ export class UI {
   }
   openTemplateSheet() { let close; const box = this.templateList(() => close?.()); close = this.modal('Vorlagen', box); }
   templateList(done) {
-    const a = this.app;
-    const box = el(`<div class="menu wide">${Object.entries(TEMPLATES).map(([k, t]) => `<div class="mi tpl ${a.state.template === k ? 'on' : ''}" data-tpl="${k}"><b>${esc(t.name)}</b><small>${esc(t.desc)}</small></div>`).join('')}</div>`);
-    box.onclick = (e) => { const it = e.target.closest('[data-tpl]'); if (it) { done(); a.applyTemplate(it.dataset.tpl); this.toast('Vorlage: ' + TEMPLATES[it.dataset.tpl].name, 'info', 2000); } };
+    const a = this.app, st = a.state;
+    const user = st.userTpls || [];
+    const cur = st.template;
+    const isUser = user.some(t => t.id === cur);
+    const box = el(`<div class="menu wide">
+      ${Object.entries(TEMPLATES).map(([k, t]) => `<div class="mi tpl ${cur === k ? 'on' : ''}" data-tpl="${k}"><b>${esc(t.name)}</b><small>${esc(t.desc)}</small></div>`).join('')}
+      ${user.length ? '<div class="msep">Meine Vorlagen</div>' + user.map(t => `<div class="mi tpl ${cur === t.id ? 'on' : ''}" data-tpl="${t.id}"><b>${esc(t.name)}</b><small>${t.list.length} Indikatoren${t.chart === 'tpo' ? ' · TPO-Chart' : ''}</small><button class="tb icon del" data-deltpl="${t.id}" title="Vorlage löschen">${ICON.trash}</button></div>`).join('') : ''}
+      <div class="msep">Einstellungen bleiben beim Wechseln erhalten</div>
+      <div class="mi act" data-act="save">${ICON.plus}<span>Aktuellen Chart als neue Vorlage speichern …</span></div>
+      ${isUser ? `<div class="mi act" data-act="over">${ICON.copy}<span>„${esc(a.templateName())}“ mit aktuellem Stand überschreiben</span></div>` : ''}
+      ${cur ? `<div class="mi act" data-act="reset">${ICON.reset}<span>„${esc(a.templateName())}“ auf ${isUser ? 'gespeicherten Stand' : 'Werkseinstellung'} zurücksetzen</span></div>` : ''}
+    </div>`);
+    box.onclick = (e) => {
+      const del = e.target.closest('[data-deltpl]');
+      if (del) { e.stopPropagation(); if (confirm('Vorlage löschen?')) { a.deleteUserTemplate(del.dataset.deltpl); done(); this.toast('Vorlage gelöscht', 'info', 1800); } return; }
+      const act = e.target.closest('[data-act]');
+      if (act) {
+        done();
+        if (act.dataset.act === 'save') { const n = prompt('Name der Vorlage', 'Meine Vorlage'); if (n != null) { a.saveUserTemplate(n.trim() || 'Meine Vorlage'); this.toast('Vorlage gespeichert: ' + (n.trim() || 'Meine Vorlage'), 'info', 2200); } }
+        if (act.dataset.act === 'over') { a.saveUserTemplate(null, cur); this.toast('Vorlage aktualisiert', 'info', 1800); }
+        if (act.dataset.act === 'reset') { if (confirm('Vorlage zurücksetzen? Deine Änderungen in dieser Vorlage gehen verloren.')) { a.resetTemplate(); this.toast('Vorlage zurückgesetzt', 'info', 1800); } }
+        return;
+      }
+      const it = e.target.closest('[data-tpl]');
+      if (it) { done(); a.applyTemplate(it.dataset.tpl); this.toast('Vorlage: ' + a.templateName(it.dataset.tpl), 'info', 2000); }
+    };
     return box;
   }
 
@@ -881,6 +987,15 @@ export class UI {
   openSettings() {
     const a = this.app, st = a.state;
     const schema = [
+      { sec: 'Session (TPO, Key Levels, Naked Levels)' },
+      { k: 'sx.mode', label: 'Session', t: 'select', opts: SESSION_MODES },
+      { k: 'sx.start', label: 'Eigene Session: Beginn (HH:MM)', t: 'text' },
+      { k: 'sx.end', label: 'Eigene Session: Ende (HH:MM)', t: 'text' },
+      { k: 'sx.tz', label: 'Eigene Session: Zeitzone', t: 'select', opts: [['Europe/Berlin', 'Berlin'], ['UTC', 'UTC'], ['America/New_York', 'New York'], ['America/Chicago', 'Chicago'], ['Europe/London', 'London'], ['Asia/Tokyo', 'Tokio']] },
+      { k: 'sessionOffsetMin', label: 'Nur bei 00:00 UTC: Tagesbeginn verschieben (Minuten)', t: 'int', min: -720, max: 720 },
+      { sec: 'Market Profile' },
+      { k: 'tpoRow', label: 'TPO-Zeilengröße in Preis (0 = automatisch)', t: 'num', min: 0, max: 100000, step: 0.01 },
+      { k: 'vaStep', label: 'Value Area: Zeilen pro Schritt', t: 'select', opts: [[2, '2 Zeilen (ATAS / CBOT-Methode)'], [1, '1 Zeile']] },
       { sec: 'Darstellung' },
       { k: 'theme', label: 'Design', t: 'select', opts: [['dark', 'Dunkel'], ['light', 'Hell (wie TradingView-Bild)']] },
       { k: 'candles', label: 'Kerzenfarben', t: 'select', opts: [['auto', 'automatisch (Dunkel: Grün/Rot, Hell: Schwarz/Weiß)'], ...Object.entries(CANDLE_STYLES).map(([k, v]) => [k, v.name])] },
@@ -890,18 +1005,17 @@ export class UI {
       { k: 'd.labelOffset', label: 'Abstand rechts (Kerzen)', t: 'int', min: 0, max: 100 },
       { k: 'd.labelNoOverlap', label: 'Beschriftungen nicht überlappen', t: 'bool' },
       { k: 'd.labelBg', label: 'Beschriftung mit Hintergrund', t: 'bool' },
-      { sec: 'Session & Market Profile' },
-      { k: 'sessionOffsetMin', label: 'Session-Beginn (Minuten ab UTC-Mitternacht)', t: 'int', min: -720, max: 720 },
-      { k: 'tpoRow', label: 'TPO-Zeilengröße in Preis (0 = automatisch)', t: 'num', min: 0, max: 100000, step: 0.01 },
     ];
-    const flat = { theme: st.theme, candles: st.candles, tz: st.tz, sessionOffsetMin: st.sessionOffsetMin, tpoRow: st.tpoRow };
+    const sx = st.session || {};
+    const flat = { theme: st.theme, candles: st.candles, tz: st.tz, sessionOffsetMin: st.sessionOffsetMin, tpoRow: st.tpoRow, vaStep: st.vaStep === 1 ? 1 : 2, 'sx.mode': sx.mode || 'utc', 'sx.start': sx.start || '02:00', 'sx.end': sx.end || '22:00', 'sx.tz': sx.tz || 'Europe/Berlin' };
     for (const [k, v] of Object.entries(st.display)) flat['d.' + k] = v;
     const body = el(`<div class="setdlg"><div class="form">${formHtml(schema, flat)}</div>
       <div class="info-box">
         <b>${APP.name} ${APP.version}</b><br>
-        Daten: öffentliche Schnittstellen von Binance, Bybit, OKX und Coinbase, direkt im Browser. Einstellungen, Zeichnungen und Watchlist werden nur in diesem Browser gespeichert.<br>
+        Daten: öffentliche Schnittstellen von Binance, Bybit, OKX, Coinbase und Bitstamp, direkt im Browser. Einstellungen, Zeichnungen und Watchlist werden nur in diesem Browser gespeichert.<br>
         Charts: TradingView Lightweight Charts™ Copyright (c) 2026 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener">tradingview.com</a> (Apache-2.0).<br>
-        Aktuelle TPO-Zeile: ${a.fmt(a.rowSize())} · Kerzen geladen: ${nf(0).format(a.bars.length)}
+        Aktuelle TPO-Zeile: ${a.fmt(a.rowSize())} · Session: ${esc(a.sess.label())} · Kerzen geladen: ${nf(0).format(a.bars.length)}<br>
+        Tipp: Wie ATAS mit deiner Session = „eigene Zeiten“ 02:00–22:00 Berlin. CME-Futures liegen um die Futures-Prämie über Krypto-Spot/Perp.
       </div>
       <div class="dlg-foot"><button class="tb danger" id="sReset">Alles zurücksetzen</button><div class="grow"></div><button class="tb primary" id="sOk">Fertig</button></div></div>`);
     const close = this.modal('Einstellungen', body);
@@ -910,14 +1024,16 @@ export class UI {
       const disp = {};
       for (const [k, v] of Object.entries(flat)) if (k.startsWith('d.')) disp[k.slice(2)] = v;
       const themeChanged = flat.theme !== st.theme || flat.candles !== st.candles;
-      const sessChanged = flat.sessionOffsetMin !== st.sessionOffsetMin || flat.tpoRow !== st.tpoRow;
-      Object.assign(st, { theme: flat.theme, candles: flat.candles, tz: flat.tz, sessionOffsetMin: flat.sessionOffsetMin, tpoRow: flat.tpoRow, display: mergeDefaults(st.display, disp) });
+      const okHm = (v, d) => /^\d{1,2}:\d{2}$/.test(String(v).trim()) ? String(v).trim().padStart(5, '0') : d;
+      const nsx = { mode: flat['sx.mode'], start: okHm(flat['sx.start'], sx.start || '02:00'), end: okHm(flat['sx.end'], sx.end || '22:00'), tz: flat['sx.tz'] };
+      const sessChanged = flat.sessionOffsetMin !== st.sessionOffsetMin || flat.tpoRow !== st.tpoRow || +flat.vaStep !== (st.vaStep === 1 ? 1 : 2) || JSON.stringify(nsx) !== JSON.stringify(st.session || {});
+      Object.assign(st, { theme: flat.theme, candles: flat.candles, tz: flat.tz, sessionOffsetMin: flat.sessionOffsetMin, tpoRow: flat.tpoRow, vaStep: +flat.vaStep === 1 ? 1 : 2, session: nsx, display: mergeDefaults(st.display, disp) });
       a._save();
       if (themeChanged) a.applyTheme();
       a.refreshTimeFormat();
       this.renderAll();
-      if (sessChanged) a.ensureNeeds();
-      a.recompute();
+      if (sessChanged) { a.ensureNeeds(); if (a.isTpo) a.applySpacing(); }
+      a.recompute(true);
     });
     $('#sOk', body).onclick = close;
     $('#sReset', body).onclick = () => {
@@ -1013,8 +1129,9 @@ function fieldHtml(f, s) {
   let input;
   switch (f.t) {
     case 'int': case 'num': input = `<input id="${id}" type="number" inputmode="decimal" data-k="${f.k}" data-t="${f.t}" value="${v}" ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} step="${f.step || 1}">`; break;
-    case 'select': input = `<select id="${id}" data-k="${f.k}" data-t="select">${f.opts.map(([k, l]) => `<option value="${k}" ${String(k) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
+    case 'select': input = `<select id="${id}" data-k="${f.k}" data-t="select">${(typeof f.opts === 'function' ? f.opts() : f.opts).map(([k, l]) => `<option value="${k}" ${String(k) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`; break;
     case 'date': input = `<input id="${id}" type="date" data-k="${f.k}" data-t="date" value="${esc(v)}">`; break;
+    case 'text': input = `<input id="${id}" type="text" data-k="${f.k}" data-t="text" value="${esc(v ?? '')}" maxlength="40">`; break;
     case 'width': input = widthHtml(f.k, v); break;
     case 'color': {
       const auto = v === 'auto';
@@ -1034,6 +1151,7 @@ function readField(t, s) {
   else if (ty === 'num') { const v = parseFloat(String(t.value).replace(',', '.')); if (Number.isFinite(v)) s[k] = clampNum(v, t); }
   else if (ty === 'select') { const cur = s[k]; s[k] = typeof cur === 'number' ? +t.value : t.value; }
   else if (ty === 'date') s[k] = t.value;
+  else if (ty === 'text') s[k] = t.value;
   else if (ty === 'color') s[k] = t.value;
   else if (ty === 'auto') s[k] = t.checked ? 'auto' : '#888888';
 }

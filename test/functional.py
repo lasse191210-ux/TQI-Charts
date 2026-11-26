@@ -14,6 +14,7 @@ def main():
         ctx.add_init_script(e2e.FAKE_WS.replace('%LAST%', str(e2e.LAST)))
         ctx.route(re.compile(r'https://(fapi|api|data-api)\.binance(\.vision|\.com).*'), e2e.route_handler)
         ctx.route(re.compile(r'https://(api\.bybit|www\.okx|api\.exchange\.coinbase)\.com.*'), e2e.route_handler)
+        ctx.route(re.compile(r'https://www\.bitstamp\.net/.*'), e2e.route_handler)
         p = ctx.new_page()
         p.on('console', lambda m: errors.append(f'[{m.type}] {m.text}') if m.type in ('error',) else None)
         p.on('pageerror', lambda e: errors.append(f'[pageerror] {e}'))

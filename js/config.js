@@ -1,5 +1,5 @@
 // Grundeinstellungen, Coins, Vorlagen und Farbthemen.
-export const APP = { name: 'TQI Charts', version: '1.0.0', key: 'tqi-charts:v1' };
+export const APP = { name: 'TQI Charts', version: '1.1.0', key: 'tqi-charts:v1' };
 
 export const COINS = [
   ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['SOL', 'Solana'], ['XRP', 'XRP'], ['BNB', 'BNB'], ['DOGE', 'Dogecoin'],
@@ -15,27 +15,34 @@ export const COIN_NAME = Object.fromEntries(COINS);
 export const TEMPLATES = {
   bild: {
     name: 'Standard (wie mein TradingView)',
-    desc: 'RVWAP 365/90/7 mit Z-Tabelle, VWAP-Bänder, TPO als schwarze Buchstaben, Key Levels und Options-Level als kurze Marken rechts, Big Trades',
+    desc: 'RVWAP 365/90/7 mit Z-Tabelle, VWAP-Bänder, Key Levels (TPO, durchgezogen ab Entstehung), SFP, Options-Level, Big Trades. TPO über den TPO-Knopf.',
     list: [
       { type: 'rvwap' },
       { type: 'hvb', visible: false },
       { type: 'vwap', s: { period: 'day' } },
-      { type: 'tpo' },
+      { type: 'tpo', visible: false },
       { type: 'keylevels' },
+      { type: 'sfp' },
       { type: 'options' },
       { type: 'bigtrades' },
     ],
   },
   keylevels: {
-    name: 'Nur TPO + Key Levels',
-    desc: 'Kerzen mit TPO und Key Levels (nPOC, Tails, Singles, VAH/VAL/POC Vortag, Woche, Quartal, Jahr, 52W-Tief)',
-    list: [{ type: 'tpo' }, { type: 'keylevels' }],
+    name: 'Nur Key Levels',
+    desc: 'Kerzen mit Key Levels (nPOC, Tails, Singles, VAH/VAL/POC Vortag, Woche, Quartal, Jahr, 52W-Tief) und SFP',
+    list: [{ type: 'tpo', visible: false }, { type: 'keylevels' }, { type: 'sfp' }],
+  },
+  tpo: {
+    name: 'TPO-Ansicht (wie MMT)',
+    desc: 'Market Profile je Tag. Profil antippen → mit Nachbar zusammenfügen, an einer Stelle teilen oder wieder trennen.',
+    chart: 'tpo',
+    list: [],
   },
   orderflow: {
     name: 'Orderflow',
-    desc: 'VWAP, TPO, Key Levels, Big Trades, Liquidationen, dazu Panels: Volumen nach Delta, CVD, Open Interest',
+    desc: 'VWAP, Key Levels, Big Trades, Liquidationen, dazu Panels: Volumen nach Delta, CVD, Open Interest',
     list: [
-      { type: 'vwap', s: { period: 'day' } }, { type: 'tpo' }, { type: 'keylevels' },
+      { type: 'vwap', s: { period: 'day' } }, { type: 'keylevels' }, { type: 'sfp' },
       { type: 'bigtrades' }, { type: 'liq' },
       { type: 'volume' }, { type: 'cvd' }, { type: 'oi' },
     ],
@@ -45,9 +52,10 @@ export const TEMPLATES = {
 
 export const DEFAULT_STATE = {
   market: 'binance-perp', base: 'BTC', tf: '15m', chartType: 'candles', lastType: 'candles',
-  tpo: { block: '30m', rowSize: 0, display: 'auto', colors: 'gradient', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false },
+  tpo: { block: '30m', rowSize: 0, display: 'auto', colors: 'mono', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false },
   theme: 'light', candles: 'auto', tz: 'local', sessionOffsetMin: 0,
-  template: 'bild', indicators: null,
+  session: { mode: 'utc', start: '02:00', end: '22:00', tz: 'Europe/Berlin' }, vaStep: 2,
+  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0,
   watchlist: ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE', 'SUI', 'LINK', 'AVAX', 'ADA', 'LTC'],
   favTfs: ['1m', '5m', '15m', '1h', '4h', '1D'],
   rightPanel: 'watch', rightOpen: true,

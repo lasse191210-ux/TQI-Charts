@@ -1,6 +1,7 @@
 // Alle Indikatoren: Einstellungen, Rechnung und Zeichnung.
 // Hauptchart-Indikatoren zeichnen in die Scene (overlay.js), Panel-Indikatoren liefern Plots für eigene Panels.
-import { DAY, MIN, periodStart, periodPrev, nf, fmtDayLabel, minutesToTf, rgba, mixHex, tfMs, niceStep, lowerBound, splitColor } from './util.js';
+import { DAY, MIN, periodStart, periodPrev, nf, fmtDayLabel, minutesToTf, rgba, mixHex, tfMs, niceStep, lowerBound, splitColor, weekStart, INK, INK2, POC } from './util.js';
+import { MARKETS } from './exchanges.js';
 import { sessionProfiles } from './calc/vprofile.js';
 import { buildTpoSessions } from './render/tpo.js';
 import { anchoredVwap, rollingVwap, sessionAlignedRolling, autoResolution, projectToChart, periodSummary } from './calc/vwap.js';
@@ -21,21 +22,39 @@ function bandArrays(vwap, sd, m) {
   return { up, dn };
 }
 const lastFinite = (a) => { for (let i = a.length - 1; i >= 0; i--) if (Number.isFinite(a[i])) return a[i]; return NaN; };
+/** Börsen-Auswahl „Daten von“ (leer = wie Chart). VWAP-Werte hängen vom Volumen der Börse ab. */
+const FEEDS = () => [['', 'wie Chart'], ...Object.values(MARKETS).map(m => [m.id, `${m.label} (${m.quote})`])];
+const feedName = (id) => id && MARKETS[id] ? MARKETS[id].label : '';
+/** Werte, die auf Kerzen einer anderen Börse gerechnet wurden, per Zeit auf die Chart-Kerzen legen. */
+function mapToChart(cb, sb, r, tfms) {
+  const n = cb.length, vwap = new Float64Array(n).fill(NaN), sd = new Float64Array(n).fill(NaN), isNew = new Uint8Array(n);
+  let j = -1, lastPs = null;
+  for (let i = 0; i < n; i++) {
+    const t = cb[i].t;
+    while (j + 1 < sb.length && sb[j + 1].t <= t) j++;
+    if (j >= 0 && t - sb[j].t < tfms * 1.5 && Number.isFinite(r.vwap[j])) {
+      vwap[i] = r.vwap[j]; sd[i] = r.sd[j];
+      if (r.pStart[j] !== lastPs) { isNew[i] = 1; lastPs = r.pStart[j]; }
+    }
+  }
+  return { ...r, vwap, sd, isNew };
+}
 
 // ============================================================================ TQI: VWAP mit VAH/VAL
 const vwap = {
   type: 'vwap', name: 'VWAP mit VAH / VAL', cat: 'tqi', pane: 'main',
   desc: 'VWAP je Tag/Woche/Monat mit ±1σ als VAH/VAL und Bändern 2–4 (wie VWAP Suite).',
   defaults: {
-    period: 'day', source: 'ohlc4', line: true, b1: true, b2: true, b3: true, b4: true, m1: 1, m2: 2, m3: 3, m4: 4,
-    zones: true, zoneColor: '#e91e6324', outer: false, outerColor: '#787b860d', prev: false,
+    period: 'day', source: 'ohlc4', feed: '', line: true, b1: true, b2: true, b3: true, b4: true, m1: 1, m2: 2, m3: 3, m4: 4,
+    zones: true, zoneColor: '#787b861f', outer: false, outerColor: '#787b860d', prev: false,
     labels: true, lineLabel: true, axis: true,
-    color: '#e91e63', c1: '#e91e63bf', c2: '#787b86cc', c3: '#787b86cc', c4: '#787b86cc', width: 1, bw: 1,
+    color: INK, c1: '#131722bf', c2: '#787b86cc', c3: '#787b86cc', c4: '#787b86cc', width: 1, bw: 1,
   },
   schema: [
     { sec: 'Berechnung' },
     { k: 'period', label: 'Periode (Anker)', t: 'select', opts: PERIODS },
     { k: 'source', label: 'Quelle', t: 'select', opts: SRC },
+    { k: 'feed', label: 'Daten von (Börse; leer = wie Chart)', t: 'select', opts: FEEDS },
     { k: 'm1', label: 'Multiplikator Band 1 (VAH / VAL)', t: 'num', min: 0, max: 20, step: 0.1 },
     { k: 'm2', label: 'Multiplikator Band 2', t: 'num', min: 0, max: 20, step: 0.1 },
     { k: 'm3', label: 'Multiplikator Band 3', t: 'num', min: 0, max: 20, step: 0.1 },
@@ -57,10 +76,21 @@ const vwap = {
   ],
   title(s) {
     const ms = [1, 2, 3, 4].filter(k => s['b' + k]).map(k => n2(s['m' + k]));
-    return `VWAP ${PERIOD_EN[s.period]} Bands ${s.source} ${ms.join(' ')}`;
+    return `VWAP ${PERIOD_EN[s.period]} Bands ${s.source} ${ms.join(' ')}${s.feed ? ' · ' + feedName(s.feed) : ''}`;
   },
-  needs(s, c) { return [{ tf: c.tf, from: periodStart(c.now, s.period, c.offset) }]; },
-  compute(s, c) { return anchoredVwap(c.bars, { source: s.source, period: s.period, offset: c.offset }); },
+  needs(s, c) {
+    if (s.feed && s.feed !== c.marketId && c.feedOk(s.feed)) return [{ tf: c.tf, from: Math.min(periodStart(c.now, s.period, c.offset), c.bars[0]?.t ?? c.now), market: s.feed }];
+    return [{ tf: c.tf, from: periodStart(c.now, s.period, c.offset) }];
+  },
+  compute(s, c) {
+    if (s.feed && s.feed !== c.marketId && c.feedOk(s.feed)) {
+      const st = c.storeOf(s.feed, c.tf);
+      if (!st) return null;
+      const r = anchoredVwap(st.bars, { source: s.source, period: s.period, offset: c.offset });
+      return mapToChart(c.bars, st.bars, r, c.tfMs);
+    }
+    return anchoredVwap(c.bars, { source: s.source, period: s.period, offset: c.offset });
+  },
   values(s, d, i) {
     const out = [];
     if (s.line) out.push({ v: d.vwap[i], color: s.color });
@@ -115,7 +145,7 @@ const vwap = {
 
 // ============================================================================ TQI: Rolling VWAP + Z-Tabelle
 const RV_SLOTS = [1, 2, 3, 4, 5, 6];
-const rvwapDefaults = { source: 'ohlc4', maxBars: 1000, band: 0.05, bandOpacity: 0.18, dotted: true, labels: true, axis: true, table: true, sessionAligned: false, color: '#787b86', width: 1 };
+const rvwapDefaults = { source: 'ohlc4', feed: 'bitstamp-spot', maxBars: 1000, band: 0.05, bandOpacity: 0.18, dotted: true, labels: true, axis: true, table: true, sessionAligned: false, color: '#787b86', width: 1 };
 [[true, 365], [true, 90], [false, 30], [true, 7], [false, 14], [false, 1]].forEach(([on, d], i) => { rvwapDefaults['w' + (i + 1)] = on; rvwapDefaults['d' + (i + 1)] = d; });
 const rvwap = {
   type: 'rvwap', name: 'Rolling VWAP (RVWAP)', cat: 'tqi', pane: 'main',
@@ -124,6 +154,7 @@ const rvwap = {
   schema: [
     { sec: 'Berechnung' },
     { k: 'source', label: 'Quelle', t: 'select', opts: SRC },
+    { k: 'feed', label: 'Daten von (Börse wie in TradingView: BTCUSD = Bitstamp)', t: 'select', opts: FEEDS },
     { k: 'maxBars', label: 'Auflösung: max. Kerzen pro Fenster', t: 'int', min: 50, max: 5000 },
     { k: 'sessionAligned', label: 'Fenster ab Session-Anfang (statt rollierend)', t: 'bool' },
     { sec: 'Fenster' },
@@ -139,15 +170,17 @@ const rvwap = {
     { k: 'width', label: 'Linienbreite', t: 'int', min: 1, max: 5 },
   ],
   windows(s) { return RV_SLOTS.filter(i => s['w' + i] && s['d' + i] >= 1).map(i => ({ slot: i, days: s['d' + i], res: autoResolution(s['d' + i], s.maxBars) })); },
-  title(s) { return `RVWAP ${s.source.toUpperCase()} (${s.maxBars} bars) ${this.windows(s).map(w => w.days).join(' ')}`; },
+  title(s, c) { return `RVWAP ${s.source.toUpperCase()} (${s.maxBars} bars) ${this.windows(s).map(w => w.days).join(' ')}${s.feed && (!c || s.feed !== c.marketId) ? ' · ' + feedName(s.feed) + (c && !c.feedOk(s.feed) ? ' n. v. → Chart' : '') : ''}`; },
   needs(s, c) {
     const first = c.bars.length ? c.bars[0].t : c.now;
-    return this.windows(s).map(w => ({ tf: w.res, from: first - w.days * DAY - tfMs(w.res) * 2 }));
+    const market = s.feed && s.feed !== c.marketId && c.feedOk(s.feed) ? s.feed : undefined;
+    return this.windows(s).map(w => ({ tf: w.res, from: first - w.days * DAY - tfMs(w.res) * 2, market }));
   },
   compute(s, c) {
     const wins = [];
+    const feed = s.feed && s.feed !== c.marketId && c.feedOk(s.feed) ? s.feed : null;
     for (const w of this.windows(s)) {
-      const st = c.store(w.res);
+      const st = feed ? c.storeOf(feed, w.res) : c.store(w.res);
       if (!st || !st.bars.length) continue;
       const resMs = tfMs(w.res);
       const vals = s.sessionAligned
@@ -155,7 +188,7 @@ const rvwap = {
         : rollingVwap(st.bars, w.days * DAY, s.source, resMs);
       const pr = projectToChart(c.bars, c.tf, st.bars, w.res, vals);
       const vNow = vals.vwap[vals.vwap.length - 1], sNow = vals.sd[vals.sd.length - 1];
-      const price = c.bars.length ? c.bars[c.bars.length - 1].c : NaN;
+      const price = feed ? st.bars[st.bars.length - 1].c : (c.bars.length ? c.bars[c.bars.length - 1].c : NaN);
       const ok = vals.full[vals.full.length - 1];
       wins.push({ label: w.days + 'D', days: w.days, res: w.res, vwap: pr.vwap, sd: pr.sd, now: ok ? vNow : NaN, z: ok && sNow > 0 ? (price - vNow) / sNow : NaN });
     }
@@ -179,7 +212,7 @@ const rvwap = {
 const hvb = {
   type: 'hvb', name: 'High Volume Bars', cat: 'tqi', pane: 'main',
   desc: 'Kerzen (15 Min.) mit Volumen-Z-Score ≥ 2,5 über 144 Kerzen. POC und Value Area der Kerze aus 1-Minuten-Daten.',
-  defaults: { tfMin: 15, length: 144, threshold: 2.5, confirm: false, profile: '1m', rows: 100, vaPct: 68, pocLine: true, vaLines: false, vaFill: true, delta: false, pocLife: 200, vaLife: 200, maxActive: 100, mark: true, pocColor: '#00bcd4', vaColor: '#787b86', vaOpacity: 0.24 },
+  defaults: { tfMin: 15, length: 144, threshold: 2.5, confirm: false, profile: '1m', rows: 100, vaPct: 68, pocLine: true, vaLines: false, vaFill: true, delta: false, pocLife: 200, vaLife: 200, maxActive: 100, mark: true, pocColor: POC, vaColor: '#787b86', vaOpacity: 0.24 },
   schema: [
     { sec: 'Erkennung' },
     { k: 'tfMin', label: 'Zeiteinheit (Minuten)', t: 'select', opts: [[1, '1'], [3, '3'], [5, '5'], [15, '15'], [30, '30'], [60, '60'], [240, '240']] },
@@ -299,7 +332,7 @@ const htfvwap = {
 const va = {
   type: 'va', name: 'Value Areas & Composites', cat: 'tqi', pane: 'main',
   desc: 'VAH / VAL (und POC) von Vortag, 3 Tagen, 7 Tagen, Vorwoche, 2 Wochen, Vormonat, eigene Composites und einzelne Vortage.',
-  defaults: { pd: true, d3: true, d7: true, pw: true, w2: true, pm: false, poc: false, basis: 'vol', pct: 68, step: 2, comp1: true, comp1Days: 28, comp2: true, comp2Days: 56, range: false, rangeFrom: '2026-10-01', rangeTo: '2026-10-10', days: false, daysCount: 3, daysPoc: true, fill: 0, lineColor: 'auto', textColor: '#466ee6', periodColor: '#f0961e', compColor: '#7850c8', rangeColor: '#00968c' },
+  defaults: { pd: true, d3: true, d7: true, pw: true, w2: true, pm: false, poc: false, basis: 'vol', pct: 68, step: 2, comp1: true, comp1Days: 28, comp2: true, comp2Days: 56, range: false, rangeFrom: '2026-10-01', rangeTo: '2026-10-10', days: false, daysCount: 3, daysPoc: true, fill: 0, lineColor: 'auto', textColor: INK, periodColor: INK, compColor: INK2, rangeColor: INK2 },
   schema: [
     { sec: 'Value Areas' },
     { k: 'pd', label: 'pd (Vortag)', t: 'bool' }, { k: 'd3', label: '3d (letzte 3 Tage)', t: 'bool' }, { k: 'd7', label: '7d (letzte 7 Tage)', t: 'bool' },
@@ -391,7 +424,7 @@ const va = {
 const naked = {
   type: 'naked', name: 'Naked Levels (POC, UFA, Singles, Tails)', cat: 'tqi', pane: 'main',
   desc: 'Unberührte POCs, Unfinished Auctions, Single Prints und Tails aus dem 30-Min-Market-Profile. Ein Level zählt nur, solange es nicht berührt wurde.',
-  defaults: { poc: true, pocBasis: 'vol', ufa: true, ufaMin: 2, singles: true, minSingle: 3, tails: true, minTail: 3, zoneEnd: 'touch', touchClose: 'session', touchedDashed: true, tol: 0, history: false, maxHistory: 300, lookback: 60, labelDate: true, pocColor: '#dc2828', ufaColor: 'auto', singleColor: '#969696', sellTail: '#e65a5a', buyTail: '#46aae6', boxOpacity: 0.18 },
+  defaults: { poc: true, pocBasis: 'vol', ufa: true, ufaMin: 2, singles: true, minSingle: 3, tails: true, minTail: 3, zoneEnd: 'touch', touchClose: 'session', touchedDashed: true, tol: 0, history: false, maxHistory: 300, lookback: 60, labelDate: true, rows: 0, pocColor: POC, ufaColor: 'auto', singleColor: INK2, sellTail: INK, buyTail: INK2, boxOpacity: 0.14 },
   schema: [
     { sec: 'Naked POC' },
     { k: 'poc', label: 'Naked POC anzeigen', t: 'bool' },
@@ -423,32 +456,32 @@ const naked = {
     { k: 'boxOpacity', label: 'Box-Deckkraft', t: 'num', min: 0, max: 1, step: 0.02 },
   ],
   title(s) { return 'Naked ' + [['poc', 'POC'], ['ufa', 'UFA'], ['singles', 'Singles'], ['tails', 'Tails']].filter(([k]) => s[k]).map(([, l]) => l).join(' '); },
-  needs(s, c) { return [{ tf: '30m', from: periodStart(c.now, 'day', c.offset) - (s.lookback + 1) * DAY }, { tf: '1D', count: 60 }]; },
+  needs(s, c) { return [{ tf: '30m', from: c.sessStart(c.now) - (s.lookback + 1) * DAY }, { tf: '1D', count: 60 }]; },
   compute(s, c) {
-    const days = c.profiles();
+    const days = c.profiles(s.rows);
     if (!days) return { items: [] };
     const m30 = c.store('30m').bars;
-    const today = periodStart(c.now, 'day', c.offset);
-    const minStart = today - s.lookback * DAY;
+    const minStart = c.sessStart(c.now) - s.lookback * DAY;
     const items = [];
     const status = (touchedAt) => {
       if (touchedAt == null) return 'open';
       if (s.touchClose === 'session') {
-        const end = periodStart(touchedAt, 'day', c.offset) + DAY;
+        const x = c.sess.last(touchedAt);
+        const end = x ? x[1] : periodStart(touchedAt, 'day', c.offset) + DAY;
         return c.now < end ? 'touched' : 'closed';
       }
       return 'closed';
     };
     for (const d of days) {
-      if (!d.complete || d.end > today || d.start < minStart) continue;
-      const lb = s.labelDate ? ' ' + fmtDayLabel(d.start) : '';
+      if (!d.complete || d.end > c.now || d.start < minStart) continue;
+      const lb = s.labelDate ? ' ' + fmtDayLabel(d.day ?? d.start) : '';
       if (s.poc) {
         const bases = s.pocBasis === 'both' ? ['vol', 'tpo'] : [s.pocBasis];
         for (const b of bases) {
-          const lv = profileLevels(d, { basis: b, pct: 68, step: 2 });
+          const lv = profileLevels(d, { basis: b, pct: 68, step: c.vaStep || 2 });
           if (!lv) continue;
           const tt = firstTouch(m30, d.end, lv.poc, lv.poc, { tol: s.tol });
-          items.push({ kind: 'poc', p: lv.poc, from: d.start, touched: tt, st: status(tt), label: 'nPOC' + (b === 'tpo' ? ' (tpo)' : '') + lb });
+          items.push({ kind: 'poc', p: lv.poc, from: d.start, touched: tt, st: status(tt), label: 'nPOC' + (s.pocBasis === 'both' && b === 'tpo' ? ' (tpo)' : '') + lb });
         }
       }
       if (s.ufa) {
@@ -500,7 +533,7 @@ const VP_SPAN = { day: DAY, week: 7 * DAY, month: 31 * DAY };
 const vpInd = {
   type: 'vp', name: 'Volume Profile', cat: 'tqi', pane: 'main', multi: true,
   desc: 'Volumenprofil je Tag / Woche / Monat (Session Volume) oder für den sichtbaren Bereich (VPVR) – mit POC, Value Area, Kauf/Verkauf oder Delta je Preis.',
-  defaults: { period: 'day', count: 7, mode: 'volume', rows: 0, rowsN: 80, vaPct: 70, width: 35, place: 'left', va: true, pocLine: true, extendPoc: true, vaLines: false, axis: true, source: 'auto', opacity: 0.45, color: '#8c94a6', vaColor: '#6a8ee8', pocColor: '#f0961e', buyColor: '#26a69a', sellColor: '#ef5350' },
+  defaults: { period: 'day', count: 7, mode: 'volume', rows: 0, rowsN: 80, vaPct: 70, width: 35, place: 'left', va: true, pocLine: true, extendPoc: true, vaLines: false, axis: true, source: 'auto', opacity: 0.45, color: '#9598a1', vaColor: '#5d606b', pocColor: POC, buyColor: INK2, sellColor: INK },
   schema: [
     { sec: 'Berechnung' },
     { k: 'period', label: 'Profil je', t: 'select', opts: VP_PERIODS },
@@ -581,7 +614,7 @@ const TPO_BLOCK_OPTS = [['5m', '5 Minuten'], ['15m', '15 Minuten'], ['30m', '30 
 const tpoInd = {
   type: 'tpo', name: 'TPO (Market Profile)', cat: 'tqi', pane: 'main',
   desc: 'Market Profile je Tag direkt im Kerzenchart (TPO und Kerzen zusammen): Buchstaben oder Blöcke, POC, Value Area, Initial Balance, Single Prints.',
-  defaults: { block: '30m', rows: 0, vaPct: 68, ibMin: 60, count: 2, display: 'letters', colors: 'mono', mono: 'auto', opacity: 0.8, width: 1, poc: true, pocColor: '#e91e63', va: true, vaColor: '#7c3aed', vaFill: false, vaFillColor: '#7c3aed', vaFillOpacity: 0.05, lines: 'profile', names: true, axis: true, ib: false, ibColor: '#2962ff', singles: false, singleColor: '#f0a93b' },
+  defaults: { block: '30m', rows: 0, vaPct: 68, ibMin: 60, count: 2, display: 'letters', colors: 'mono', mono: 'auto', opacity: 0.8, width: 1, poc: true, pocColor: POC, va: true, vaColor: INK, vaFill: false, vaFillColor: INK2, vaFillOpacity: 0.06, lines: 'profile', names: true, axis: true, ib: false, ibColor: INK2, singles: false, singleColor: INK2 },
   schema: [
     { sec: 'Profil' },
     { k: 'block', label: 'Zeit pro Buchstabe (TPO-Periode)', t: 'select', opts: TPO_BLOCK_OPTS },
@@ -607,16 +640,16 @@ const tpoInd = {
     { k: 'singles', label: 'Single Prints hervorheben', t: 'bool', color: 'singleColor' },
   ],
   title(s) { return `TPO ${s.block} · VA ${s.vaPct} %`; },
-  needs(s, c) { return [{ tf: s.block, from: periodStart(c.now, 'day', c.offset) - s.count * DAY }, { tf: '1D', count: 60 }]; },
+  needs(s, c) { return [{ tf: s.block, from: c.sess.back(c.now, s.count) - DAY }, { tf: '1D', count: 60 }]; },
   compute(s, c) {
     if (c.isTpo) return { sessions: [] };
     const bars = s.block === c.tf ? c.bars : c.store(s.block)?.bars;
     if (!bars || !bars.length) return { sessions: [] };
-    const from = periodStart(c.now, 'day', c.offset) - (s.count - 1) * DAY;
+    const from = c.sess.back(c.now, s.count - 1);
     const sub = bars.slice(lowerBound(bars, from));
     const rs = s.rows > 0 ? s.rows : c.rowSize();
-    const sessions = buildTpoSessions(sub, { rowSize: rs, offset: c.offset, blockMs: tfMs(s.block), vaPct: s.vaPct, ibMin: s.ibMin });
-    return { sessions, rs, blockMs: tfMs(s.block) };
+    const sessions = buildTpoSessions(sub, { rowSize: rs, sess: c.sess, blockMs: tfMs(s.block), vaPct: s.vaPct, ibMin: s.ibMin, step: c.vaStep });
+    return { sessions: sessions.slice(-s.count), rs, blockMs: tfMs(s.block) };
   },
   values(s, d) {
     const cur = d.sessions?.[d.sessions.length - 1];
@@ -645,7 +678,7 @@ function drawLevel(sc, c, s, o) {
 
 // ============================================================================ TQI: Key Levels (nur das Wichtige)
 /** VAH / VAL / POC über eine Zeitspanne: jede Kerze = eine TPO-Periode. */
-function rangeLevels(bars, t0, t1, { rs, basis, pct }) {
+function rangeLevels(bars, t0, t1, { rs, basis, pct, step = 2 }) {
   if (!bars || !bars.length) return null;
   const i0 = lowerBound(bars, t0), i1 = lowerBound(bars, t1) - 1;
   if (i1 < i0) return null;
@@ -660,7 +693,7 @@ function rangeLevels(bars, t0, t1, { rs, basis, pct }) {
     const per = b.v / (z - a + 1);
     for (let k = a; k <= z; k++) { tpo[k] += 1; vol[k] += per; }
   }
-  return profileLevels({ rowLo: r0, tpo, vol, rowSize: rs }, { basis, pct, step: 2 });
+  return profileLevels({ rowLo: r0, tpo, vol, rowSize: rs }, { basis, pct, step });
 }
 const KL_TAG = { pd: 'Vortag', pw: 'Vorwoche', pq: 'Vorquartal', py: 'Vorjahr' };
 const keylevels = {
@@ -668,10 +701,10 @@ const keylevels = {
   desc: 'Nur die wichtigen Level: Naked POC, Tails, Single Prints, VAH/VAL/POC vom Vortag (TPO), 52-Wochen-Tief sowie VAH/VAL/POC von Vorwoche, Vorquartal und Vorjahr.',
   defaults: {
     basis: 'tpo', pct: 68, npoc: true, tails: true, singles: true, minSingle: 3, minTail: 2, lookback: 20,
-    pd: true, pw: true, pq: true, py: true, w52l: true, w52h: false,
-    names: true, axis: false, width: 1, pocDash: true, lines: 'short',
-    pdColor: '#7c3aed', pwColor: '#2962ff', pqColor: '#e67e22', pyColor: '#00897b', npocColor: '#dc2828', w52Color: '#089981',
-    singleColor: '#f0a93b', sellTail: '#ef5350', buyTail: '#26a69a', boxOpacity: 0.16,
+    pd: true, pw: true, pq: true, py: true, w52l: true, w52h: false, rows: 0,
+    names: true, dates: true, axis: false, width: 1, pocDash: true, lines: 'full',
+    pdColor: INK, pwColor: INK, pqColor: INK, pyColor: INK, pocColor: POC, npocColor: POC, w52Color: INK,
+    singleColor: INK2, sellTail: INK, buyTail: INK2, boxOpacity: 0.12,
   },
   schema: [
     { sec: 'Level' },
@@ -687,13 +720,16 @@ const keylevels = {
     { sec: 'Berechnung' },
     { k: 'basis', label: 'VAH / VAL / POC aus', t: 'select', opts: [['tpo', 'TPO'], ['vol', 'Volumen']] },
     { k: 'pct', label: 'Value Area (%)', t: 'int', min: 50, max: 95 },
+    { k: 'rows', label: 'Zeilengröße (Preis, 0 = wie TPO automatisch)', t: 'num', min: 0, max: 1e6, step: 0.01 },
     { k: 'lookback', label: 'nPOC / Singles / Tails: letzte Tage', t: 'int', min: 2, max: 120 },
     { k: 'minSingle', label: 'Single Prints: min. Zeilen', t: 'int', min: 1, max: 100 },
     { k: 'minTail', label: 'Tails: min. Zeilen', t: 'int', min: 1, max: 100 },
     { sec: 'Stil', tab: 'style' },
-    { k: 'lines', label: 'Linien', t: 'select', opts: [['short', 'kurz rechts (übersichtlich)'], ['full', 'ab Entstehung bis zum Rand']] },
+    { k: 'lines', label: 'Linien', t: 'select', opts: [['full', 'ab Entstehung bis zum Rand (durchgezogen)'], ['short', 'nur kurz rechts']] },
+    { k: 'dates', label: 'Datum an den Namen (pdVAL 25.11.)', t: 'bool' },
     { k: 'width', label: 'Linienbreite', t: 'width' },
     { k: 'pocDash', label: 'POC gestrichelt', t: 'bool' },
+    { k: 'pocColor', label: 'Farbe POC (pd, pw, pq, py)', t: 'color' },
     { k: 'names', label: 'Namen an den Linien (pdVAH, nPOC …)', t: 'bool' },
     { k: 'axis', label: 'Preis-Labels an der Achse', t: 'bool' },
     { k: 'sellTail', label: 'Farbe Selling Tail', t: 'color' },
@@ -708,41 +744,42 @@ const keylevels = {
     return 'Key Levels ' + l.join(' ');
   },
   nakedS(s) {
-    return { ...naked.defaults, poc: s.npoc, pocBasis: s.basis, ufa: false, singles: s.singles, minSingle: s.minSingle, tails: s.tails, minTail: s.minTail, lookback: s.lookback, labelDate: true, history: false, pocColor: s.npocColor, singleColor: s.singleColor, sellTail: s.sellTail, buyTail: s.buyTail, boxOpacity: s.boxOpacity };
+    return { ...naked.defaults, poc: s.npoc, pocBasis: s.basis, ufa: false, singles: s.singles, minSingle: s.minSingle, tails: s.tails, minTail: s.minTail, lookback: s.lookback, labelDate: s.dates !== false, rows: s.rows, history: false, pocColor: s.npocColor, singleColor: s.singleColor, sellTail: s.sellTail, buyTail: s.buyTail, boxOpacity: s.boxOpacity };
   },
   needs(s, c) {
-    const today = periodStart(c.now, 'day', c.offset);
-    const req = [{ tf: '30m', from: Math.min(today - (s.lookback + 1) * DAY, periodStart(c.now, 'week', c.offset) - 8 * DAY) }, { tf: '1D', count: 400 }];
+    const today = c.sessStart(c.now);
+    const req = [{ tf: '30m', from: Math.min(today - (s.lookback + 1) * DAY, weekStart(c.now) - 9 * DAY) }, { tf: '1D', count: 400 }];
     if (s.pq) req.push({ tf: '1h', from: periodPrev(periodStart(c.now, 'quarter', c.offset), 'quarter', c.offset) });
     if (s.py) req.push({ tf: '4h', from: periodPrev(periodStart(c.now, 'year', c.offset), 'year', c.offset) });
     return req;
   },
   compute(s, c) {
     const out = { lines: [], naked: null, w52: null };
-    const days = c.profiles();
-    const today = periodStart(c.now, 'day', c.offset);
-    const opt = { basis: s.basis, pct: s.pct, step: 2 };
+    const days = c.profiles(s.rows);
+    const opt = { basis: s.basis, pct: s.pct, step: c.vaStep || 2 };
     if (days && s.pd) {
-      const d = [...days].reverse().find(x => x.complete && x.end <= today);
+      const d = [...days].reverse().find(x => x.complete && x.end <= c.now);
       const lv = d && profileLevels(d, opt);
-      if (lv) out.lines.push({ tag: 'pd', from: d.start, ...lv });
+      if (lv) out.lines.push({ tag: 'pd', from: d.start, date: fmtDayLabel(d.day ?? d.start), ...lv });
     }
     if (days && s.pw) {
-      const ws = periodStart(c.now, 'week', c.offset), pws = periodPrev(ws, 'week', c.offset);
-      const sel = days.filter(x => x.start >= pws && x.start < ws);
+      const cur = c.sess.last(c.now);
+      const ws = weekStart(cur ? cur[2] : c.now), pws = ws - 7 * DAY;
+      const sel = days.filter(x => (x.day ?? x.start) >= pws && (x.day ?? x.start) < ws);
       const lv = sel.length && profileLevels(mergeProfiles(sel), opt);
-      if (lv) out.lines.push({ tag: 'pw', from: pws, ...lv });
+      if (lv) out.lines.push({ tag: 'pw', from: sel[0].start, date: fmtDayLabel(pws), ...lv });
     }
-    const base = c.rowSize();
+    const base = s.rows > 0 ? s.rows : c.rowSize();
     if (s.pq) {
       const qs = periodStart(c.now, 'quarter', c.offset), pqs = periodPrev(qs, 'quarter', c.offset);
-      const lv = rangeLevels(c.store('1h')?.bars, pqs, qs, { rs: niceStep(base * 4), basis: s.basis, pct: s.pct });
-      if (lv) out.lines.push({ tag: 'pq', from: pqs, ...lv });
+      const lv = rangeLevels(c.store('1h')?.bars, pqs, qs, { rs: niceStep(base * 4), basis: s.basis, pct: s.pct, step: opt.step });
+      const d = new Date(pqs);
+      if (lv) out.lines.push({ tag: 'pq', from: pqs, date: `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`, ...lv });
     }
     if (s.py) {
       const ys = periodStart(c.now, 'year', c.offset), pys = periodPrev(ys, 'year', c.offset);
-      const lv = rangeLevels(c.store('4h')?.bars, pys, ys, { rs: niceStep(base * 10), basis: s.basis, pct: s.pct });
-      if (lv) out.lines.push({ tag: 'py', from: pys, ...lv });
+      const lv = rangeLevels(c.store('4h')?.bars, pys, ys, { rs: niceStep(base * 10), basis: s.basis, pct: s.pct, step: opt.step });
+      if (lv) out.lines.push({ tag: 'py', from: pys, date: String(new Date(pys).getUTCFullYear()), ...lv });
     }
     if (s.w52l || s.w52h) {
       const d1 = c.store('1D')?.bars;
@@ -762,10 +799,11 @@ const keylevels = {
   draw(s, d, sc, c) {
     for (const L of d.lines) {
       const col = s[L.tag + 'Color'];
-      drawLevel(sc, c, s, { p: L.vah, from: L.from, color: col, width: s.width, label: s.names ? L.tag + 'VAH' : null, lc: col });
-      drawLevel(sc, c, s, { p: L.val, from: L.from, color: col, width: s.width, label: s.names ? L.tag + 'VAL' : null, lc: col });
-      drawLevel(sc, c, s, { p: L.poc, from: L.from, color: col, width: s.width, dash: s.pocDash ? 'dashed' : null, label: s.names ? L.tag + 'POC' : null, lc: col });
-      if (s.axis) for (const p of [L.vah, L.val, L.poc]) sc.axisLabel(p, null, col, '#fff');
+      const nm = (k) => s.names ? L.tag + k + (s.dates !== false && L.date ? ' ' + L.date : '') : null;
+      drawLevel(sc, c, s, { p: L.vah, from: L.from, color: col, width: s.width, label: nm('VAH'), lc: col });
+      drawLevel(sc, c, s, { p: L.val, from: L.from, color: col, width: s.width, label: nm('VAL'), lc: col });
+      drawLevel(sc, c, s, { p: L.poc, from: L.from, color: s.pocColor || col, width: s.width, dash: s.pocDash ? 'dashed' : null, label: nm('POC'), lc: s.pocColor || col });
+      if (s.axis) { sc.axisLabel(L.vah, null, col, '#fff'); sc.axisLabel(L.val, null, col, '#fff'); sc.axisLabel(L.poc, null, s.pocColor || col, '#fff'); }
     }
     if (d.w52) {
       for (const [on, x, nm] of [[s.w52l, d.w52.lo, '52W Low'], [s.w52h, d.w52.hi, '52W High']]) {
@@ -775,7 +813,9 @@ const keylevels = {
       }
     }
     if (d.naked) {
-      let items = s.names ? d.naked.items : d.naked.items.map(x => ({ ...x, label: null }));
+      const pocs = d.lines.map(L => [L.poc, L.from]);
+      let items = d.naked.items.filter(x => !(x.kind === 'poc' && pocs.some(([p, f]) => f === x.from && Math.abs(p - x.p) < 1e-9 + Math.abs(p) * 1e-9)));
+      if (!s.names) items = items.map(x => ({ ...x, label: null }));
       if (s.lines === 'short') {
         // nur offene Level, als kurze Marken bzw. kurze Zonen rechts
         const last = c.bars.length - 1, n = Math.min(18, last);
@@ -798,7 +838,7 @@ const optionsInd = {
   defaults: {
     cr: true, ps: true, hvl: true, maxPain: true, em1d: true, em1w: false, walls: false, gex: false, gexN: 5, odte: false, major: false,
     offset: 'auto', lines: 'short', names: true, axis: true, width: 1, refresh: 60,
-    crColor: '#089981', psColor: '#f23645', hvlColor: '#ff9800', mpColor: '#787b86', emColor: '#7c3aed', wallColor: '#00897b', gexColor: '#2962ff', odteColor: '#00bcd4', majorColor: '#e91e63',
+    crColor: INK, psColor: INK, hvlColor: INK, mpColor: INK2, emColor: INK2, wallColor: INK, gexColor: INK2, odteColor: INK2, majorColor: INK,
   },
   schema: [
     { sec: 'Level' },
@@ -859,7 +899,7 @@ const optionsInd = {
 const sfpInd = {
   type: 'sfp', name: 'SFP (Swing Failure Pattern)', cat: 'tqi', pane: 'main',
   desc: 'Hoch/Tief über einen offenen Swing, Schluss zurück im Level.',
-  defaults: { strength: 5, minDist: 0, maxSwings: 5, lines: true, bear: '#dc2828', bull: '#1eaa50' },
+  defaults: { strength: 5, minDist: 0, maxSwings: 5, lines: true, bear: INK, bull: INK2 },
   schema: [
     { k: 'strength', label: 'Swing-Stärke (Kerzen links/rechts)', t: 'int', min: 1, max: 50 },
     { k: 'minDist', label: 'Schluss mind. so weit zurück im Level (Preis)', t: 'num', min: 0, max: 100000, step: 0.1 },
@@ -874,8 +914,8 @@ const sfpInd = {
   draw(s, d, sc, c) {
     for (const x of d.list) {
       const col = x.type === 'bear' ? s.bear : s.bull;
-      sc.mark({ i: x.i, p: x.type === 'bear' ? c.bars[x.i].h : c.bars[x.i].l, shape: x.type === 'bear' ? 'down' : 'up', color: col, text: 'SFP' });
-      if (s.lines) sc.level({ p: x.price, from: x.swingT, to: x.t, color: rgba(col, 0.7), dash: 'dotted' });
+      sc.mark({ i: x.i, p: x.type === 'bear' ? c.bars[x.i].h : c.bars[x.i].l, shape: 'text', color: col, text: 'sfp', below: x.type !== 'bear' });
+      if (s.lines) sc.level({ p: x.price, from: x.swingT, to: x.t, color: rgba(col, 0.75), width: 1 });
     }
   },
 };
@@ -884,7 +924,7 @@ const sfpInd = {
 const inst = {
   type: 'inst', name: 'Institutionelle Level', cat: 'tqi', pane: 'main',
   desc: '52-Wochen-Hoch/Tief, Vorwoche/Vormonat/Vortag Hoch/Tief, Daily/Weekly/Monthly/Quarterly/Yearly Open, 200-/50-Tage-Durchschnitt.',
-  defaults: { w52: true, pwHL: true, pmHL: true, pdHL: false, do: true, wo: true, mo: true, qo: false, yo: true, sma200: true, sma50: false, textColor: 'auto', lineColor: 'auto', sma200Color: '#c83ca0', sma50Color: '#3ca0c8' },
+  defaults: { w52: true, pwHL: true, pmHL: true, pdHL: false, do: true, wo: true, mo: true, qo: false, yo: true, sma200: true, sma50: false, textColor: 'auto', lineColor: 'auto', sma200Color: INK2, sma50Color: INK2 },
   schema: [
     { k: 'w52', label: '52w high / low', t: 'bool' }, { k: 'pwHL', label: 'pw high / low (Vorwoche)', t: 'bool' },
     { k: 'pmHL', label: 'pm high / low (Vormonat)', t: 'bool' }, { k: 'pdHL', label: 'pd high / low (Vortag)', t: 'bool' },
@@ -913,7 +953,7 @@ const inst = {
 const volcandles = {
   type: 'volcandles', name: 'Volumen-Kerzen markieren', cat: 'tqi', pane: 'main',
   desc: 'Kerzen mit sehr hohem Volumen (Z-Score gegen die letzten 200 Kerzen) markieren.',
-  defaults: { lookback: 200, sd: 3, sdExtreme: 5, onlyExtreme: false, color: '#ffc83c', extremeColor: '#ff7800', opacity: 0.35 },
+  defaults: { lookback: 200, sd: 3, sdExtreme: 5, onlyExtreme: false, color: INK2, extremeColor: INK, opacity: 0.3 },
   schema: [
     { k: 'lookback', label: 'Vergleich mit letzten X Kerzen', t: 'int', min: 20, max: 5000 },
     { k: 'sd', label: 'Hoch ab x Standardabweichungen', t: 'num', min: 0, max: 100, step: 0.1 },
@@ -938,7 +978,7 @@ const volcandles = {
 const volume = {
   type: 'volume', name: 'Volumen', cat: 'of', pane: 'own',
   desc: 'Volumen je Kerze, wahlweise nach Kerzenrichtung oder nach Delta (Taker-Kauf − Verkauf) gefärbt.',
-  defaults: { mode: 'delta', maLen: 20, ma: true, up: '#26a69a', down: '#ef5350' },
+  defaults: { mode: 'delta', maLen: 20, ma: true, up: INK2, down: INK },
   schema: [
     { k: 'mode', label: 'Färbung', t: 'select', opts: [['delta', 'nach Delta'], ['dir', 'nach Kerze']] },
     { k: 'ma', label: 'Durchschnitt', t: 'bool' }, { k: 'maLen', label: 'Durchschnitt Länge', t: 'int', min: 2, max: 500 },
@@ -966,7 +1006,7 @@ const volume = {
 const cvdInd = {
   type: 'cvd', name: 'CVD (Cumulative Volume Delta)', cat: 'of', pane: 'own',
   desc: 'Laufende Summe aus Taker-Käufen minus Taker-Verkäufen. Historie nur bei Binance, sonst ab Seitenstart live.',
-  defaults: { reset: 'none', style: 'line', color: '#2962ff' },
+  defaults: { reset: 'none', style: 'line', color: INK },
   schema: [
     { k: 'reset', label: 'Zurücksetzen', t: 'select', opts: [['none', 'nie'], ['day', 'jeden Tag'], ['week', 'jede Woche']] },
     { k: 'style', label: 'Darstellung', t: 'select', opts: [['line', 'Linie'], ['hist', 'Delta je Kerze']] },
@@ -979,7 +1019,7 @@ const cvdInd = {
     const r = cvd(c.bars, { reset: s.reset, offset: c.offset });
     const plots = {};
     if (s.style === 'line') plots.cvd = { values: r.cum, color: s.color };
-    else plots.d = { values: r.delta, colors: Array.from(r.delta, x => x >= 0 ? rgba('#26a69a', 0.7) : rgba('#ef5350', 0.7)) };
+    else plots.d = { values: r.delta, colors: Array.from(r.delta, x => x >= 0 ? rgba(INK2, 0.75) : rgba(INK, 0.75)) };
     const note = c.market.delta ? null : 'Delta-Historie nur bei Binance';
     return { plots, note };
   },
@@ -988,7 +1028,7 @@ const cvdInd = {
 const oiInd = {
   type: 'oi', name: 'Open Interest', cat: 'of', pane: 'own',
   desc: 'Offene Kontrakte (Perps). Binance liefert die letzten 30 Tage, Bybit mehr.',
-  defaults: { unit: 'coin', color: '#f0a93b' },
+  defaults: { unit: 'coin', color: INK },
   schema: [{ k: 'unit', label: 'Einheit', t: 'select', opts: [['coin', 'Coins'], ['usd', 'USD']] }, { k: 'color', label: 'Farbe', t: 'color' }],
   plots: [{ key: 'oi', kind: 'line', title: 'OI', width: 2 }],
   async: 'oi',
@@ -1006,7 +1046,7 @@ const oiInd = {
 const fundingInd = {
   type: 'funding', name: 'Funding Rate', cat: 'of', pane: 'own',
   desc: 'Funding der Perps in % je Intervall, plus aktueller Schätzwert.',
-  defaults: { pos: '#26a69a', neg: '#ef5350' },
+  defaults: { pos: INK2, neg: INK },
   schema: [{ k: 'pos', label: 'Farbe positiv', t: 'color' }, { k: 'neg', label: 'Farbe negativ', t: 'color' }],
   plots: [{ key: 'f', kind: 'hist', title: 'Funding %' }],
   async: 'funding',
@@ -1052,7 +1092,7 @@ function fmtShort(x) {
 const bigtrades = {
   type: 'bigtrades', name: 'Big Trades', cat: 'of', pane: 'main',
   desc: 'Große Marktorders als Blasen (wie ATAS Big Trades): Trades mit gleicher Zeit und Seite = eine Order. Live und rückwärts nachgeladen, im Browser gespeichert.',
-  defaults: { minUsd: 0, hours: 4, scale: 1, text: true, unit: 'usd', buy: '#26a69a', sell: '#ef5350', opacity: 0.5, border: true, maxBubbles: 1500 },
+  defaults: { minUsd: 0, hours: 4, scale: 1, text: true, unit: 'usd', buy: INK2, sell: INK, opacity: 0.55, border: true, maxBubbles: 1500 },
   schema: [
     { sec: 'Filter' },
     { k: 'minUsd', label: 'Mindestgröße in USD (0 = automatisch)', t: 'int', min: 0, max: 1e9 },
@@ -1085,7 +1125,7 @@ const bigtrades = {
 const liq = {
   type: 'liq', name: 'Liquidationen', cat: 'of', pane: 'main',
   desc: 'Liquidationen live (Binance Perps). Rot = Longs liquidiert, Grün = Shorts liquidiert.',
-  defaults: { minUsd: 10000, long: '#ef5350', short: '#26a69a' },
+  defaults: { minUsd: 10000, long: INK, short: INK2 },
   schema: [{ k: 'minUsd', label: 'Mindestgröße USD', t: 'int', min: 0, max: 100000000 }, { k: 'long', label: 'Farbe Long-Liq.', t: 'color' }, { k: 'short', label: 'Farbe Short-Liq.', t: 'color' }],
   title(s) { return 'Liquidationen ≥ ' + nf(0).format(s.minUsd) + ' $'; },
   needs() { return []; },
@@ -1099,7 +1139,7 @@ const liq = {
 const ma = {
   type: 'ma', name: 'Gleitender Durchschnitt', cat: 'std', pane: 'main', multi: true,
   desc: 'EMA oder SMA.',
-  defaults: { kind: 'ema', length: 200, source: 'close', color: '#2962ff', width: 1 },
+  defaults: { kind: 'ema', length: 200, source: 'close', color: INK, width: 1 },
   schema: [
     { k: 'kind', label: 'Typ', t: 'select', opts: [['ema', 'EMA'], ['sma', 'SMA']] },
     { k: 'length', label: 'Länge', t: 'int', min: 1, max: 2000 },
@@ -1116,7 +1156,7 @@ const ma = {
 const bb = {
   type: 'bb', name: 'Bollinger Bänder', cat: 'std', pane: 'main', multi: true,
   desc: 'SMA ± k × Standardabweichung.',
-  defaults: { length: 20, mult: 2, source: 'close', color: '#2962ff', fill: 0.06 },
+  defaults: { length: 20, mult: 2, source: 'close', color: INK2, fill: 0.06 },
   schema: [
     { k: 'length', label: 'Länge', t: 'int', min: 2, max: 500 }, { k: 'mult', label: 'Multiplikator', t: 'num', min: 0.1, max: 10, step: 0.1 },
     { k: 'source', label: 'Quelle', t: 'select', opts: [['close', 'Close'], ...SRC.filter(x => x[0] !== 'close')] },
@@ -1136,7 +1176,7 @@ const bb = {
 const rsiInd = {
   type: 'rsi', name: 'RSI', cat: 'std', pane: 'own', multi: true,
   desc: 'Relative Strength Index.',
-  defaults: { length: 14, color: '#7e57c2', ob: 70, os: 30 },
+  defaults: { length: 14, color: INK, ob: 70, os: 30 },
   schema: [{ k: 'length', label: 'Länge', t: 'int', min: 2, max: 200 }, { k: 'ob', label: 'Überkauft', t: 'int', min: 50, max: 100 }, { k: 'os', label: 'Überverkauft', t: 'int', min: 0, max: 50 }, { k: 'color', label: 'Farbe', t: 'color' }],
   plots: [{ key: 'rsi', kind: 'line', title: 'RSI', width: 1 }],
   hlines(s) { return [s.ob, 50, s.os]; },
@@ -1155,14 +1195,14 @@ const macdInd = {
   needs() { return []; },
   compute(s, c) {
     const r = macd(c.bars, s);
-    return { plots: { hist: { values: r.hist, colors: Array.from(r.hist, x => x >= 0 ? rgba('#26a69a', 0.6) : rgba('#ef5350', 0.6)) }, line: { values: r.line, color: '#2962ff' }, sig: { values: r.sig, color: '#ff6d00' } } };
+    return { plots: { hist: { values: r.hist, colors: Array.from(r.hist, x => x >= 0 ? rgba(INK2, 0.6) : rgba(INK, 0.6)) }, line: { values: r.line, color: INK }, sig: { values: r.sig, color: INK2 } } };
   },
 };
 
 const atrInd = {
   type: 'atr', name: 'ATR', cat: 'std', pane: 'own', multi: true,
   desc: 'Average True Range.',
-  defaults: { length: 14, color: '#b71c1c' },
+  defaults: { length: 14, color: INK },
   schema: [{ k: 'length', label: 'Länge', t: 'int', min: 1, max: 500 }, { k: 'color', label: 'Farbe', t: 'color' }],
   plots: [{ key: 'atr', kind: 'line', title: 'ATR', width: 1 }],
   title(s) { return `ATR ${s.length}`; },

@@ -19,31 +19,48 @@ export const TPO_DEFAULTS = {
  * Ergebnis je Session: { start, first (Index der ersten Kerze), n (Blöcke), rowLo, rowHi, rows: Array<number[]> (Periodenindizes je Zeile),
  * vol: Float64Array, poc, vah, val (Preise), vpoc, ibHi, ibLo, open, close, high, low, singles: [[lo,hi]], rowSize }
  */
-export function buildTpoSessions(bars, { rowSize, offset = 0, blockMs, vaPct = 68, ibMin = 60 }) {
+export function buildTpoSessions(bars, { rowSize, offset = 0, sess = null, blockMs, vaPct = 68, ibMin = 60, step = 2, merges = null, splits = null }) {
   const out = [];
   let cur = null;
   const ibN = Math.max(1, Math.round(ibMin * 60000 / blockMs));
+  const kOf = new Int32Array(bars.length);
+  const keyOf = new Float64Array(bars.length).fill(NaN);
+  const pidOf = new Float64Array(bars.length);
+  const sp = splits && splits.length ? [...splits].sort((a, b) => a - b) : null;
+  // Abschnitt einer Kerze: Session (Tag) → ggf. an Teilungen geschnitten → ggf. mit Nachbarn zusammengefügt
+  const segOf = (t) => {
+    let x;
+    if (sess) { x = sess.of(t); if (!x) return null; }
+    else { const st = periodStart(t, 'day', offset); x = [st, st + DAY, st]; }
+    const day0 = x[0];
+    let st = x[0], en = x[1];
+    if (sp) for (const q of sp) { if (q <= st || q >= en) continue; if (t >= q) st = q; else { en = q; break; } }
+    let merged = false;
+    if (merges) for (const m of merges) if (st >= m[0] && st < m[1]) { st = m[0]; en = Math.max(en, m[1]); merged = true; break; }
+    return { st, en, day0, merged };
+  };
   const finish = (s) => {
     const n = s.rowHi - s.rowLo + 1;
     const rows = Array.from({ length: n }, () => []);
     const vol = new Float64Array(n);
+    const lastPid = new Float64Array(n).fill(NaN);
     for (let i = s.first; i < s.first + s.n; i++) {
-      const b = bars[i];
-      const k = Math.floor((b.t - s.start) / blockMs);
+      if (keyOf[i] !== s.start) continue;
+      const b = bars[i], k = kOf[i], pid = pidOf[i];
       const a = Math.floor(b.l / rowSize) - s.rowLo, z = Math.floor(b.h / rowSize) - s.rowLo;
       const per = b.v / (z - a + 1);
-      for (let r = a; r <= z; r++) { rows[r].push(k); vol[r] += per; }
+      for (let r = a; r <= z; r++) { if (lastPid[r] !== pid) { rows[r].push(k); lastPid[r] = pid; } vol[r] += per; }
     }
     s.rows = rows; s.vol = vol; s.rowSize = rowSize;
     const counts = rows.map(r => r.length);
-    const va = valueArea(counts, vaPct, 2);
+    const va = valueArea(counts, vaPct, step);
     if (va) { s.poc = (s.rowLo + va.poc + 0.5) * rowSize; s.vah = (s.rowLo + va.hi + 1) * rowSize; s.val = (s.rowLo + va.lo) * rowSize; s.pocRow = va.poc; s.vaLo = va.lo; s.vaHi = va.hi; }
-    const vva = valueArea(Array.from(vol), vaPct, 2);
+    const vva = valueArea(Array.from(vol), vaPct, step);
     if (vva) { s.vpoc = (s.rowLo + vva.poc + 0.5) * rowSize; s.vpocRow = vva.poc; s.vvaLo = vva.lo; s.vvaHi = vva.hi; }
     // Initial Balance: erste ibN Blöcke
     let ih = -Infinity, il = Infinity;
-    for (let i = s.first; i < s.first + Math.min(s.n, ibN); i++) { ih = Math.max(ih, bars[i].h); il = Math.min(il, bars[i].l); }
-    s.ibHi = ih; s.ibLo = il; s.ibDone = s.n >= ibN;
+    for (let i = s.first, m = 0; i < s.first + s.n && m < ibN; i++) { if (keyOf[i] !== s.start || bars[i].t >= s.day0 + ibN * blockMs) continue; m++; ih = Math.max(ih, bars[i].h); il = Math.min(il, bars[i].l); }
+    s.ibHi = ih; s.ibLo = il; s.ibDone = s.cnt >= ibN;
     // Single Prints im Körper (nicht an den Extremen)
     s.singles = [];
     let r = 0;
@@ -54,16 +71,22 @@ export function buildTpoSessions(bars, { rowSize, offset = 0, blockMs, vaPct = 6
       r = e + 1;
     }
     s.maxCount = Math.max(...counts);
+    s.cells = Math.max(1, Math.round((s.end - s.start) / blockMs));
   };
   for (let i = 0; i < bars.length; i++) {
     const b = bars[i];
-    const st = periodStart(b.t, 'day', offset);
-    if (!cur || cur.start !== st) {
+    const g = segOf(b.t);
+    if (!g) { if (cur) cur.gap = true; continue; }
+    kOf[i] = Math.floor((b.t - g.day0) / blockMs);
+    keyOf[i] = g.st;
+    pidOf[i] = g.day0 + kOf[i];
+    if (!cur || cur.start !== g.st) {
       if (cur) finish(cur);
-      cur = { start: st, end: st + DAY, first: i, n: 0, rowLo: Infinity, rowHi: -Infinity, open: b.o, high: -Infinity, low: Infinity, close: b.c };
+      cur = { start: g.st, end: g.en, day0: g.day0, merged: g.merged, first: i, n: 0, cnt: 0, rowLo: Infinity, rowHi: -Infinity, open: b.o, high: -Infinity, low: Infinity, close: b.c };
       out.push(cur);
     }
-    cur.n++;
+    cur.n = i - cur.first + 1;
+    cur.cnt++;
     cur.rowLo = Math.min(cur.rowLo, Math.floor(b.l / rowSize));
     cur.rowHi = Math.max(cur.rowHi, Math.floor(b.h / rowSize));
     cur.high = Math.max(cur.high, b.h); cur.low = Math.min(cur.low, b.l); cur.close = b.c;
@@ -128,7 +151,7 @@ export class TpoPaneView {
       for (const s of vis) {
         const x0 = (xAt(s.first) - sp / 2) * hr;            // linker Rand der Session
         const xEnd = (xAt(s.first + Math.max(s.n, 1) - 1) + sp / 2) * hr; // rechter Rand (bisher)
-        const fullEnd = x0 + Math.round(DAY / this.app.tpoBlockMs) * cellW; // rechter Rand ganzer Tag
+        const fullEnd = x0 + (s.cells || Math.round(DAY / this.app.tpoBlockMs)) * cellW; // rechter Rand ganzer Abschnitt
         if (fullEnd < 0 || x0 > W) continue;
         const rs = s.rowSize;
         const yOfRow = (r) => pc((s.rowLo + r) * rs); // Unterkante der Zeile r
@@ -142,12 +165,12 @@ export class TpoPaneView {
         // Value Area hinterlegen
         if (o.va && o.vaFill && s.vaLo != null) {
           const ya = rowTop(s.vaHi) * vrr, yb = yOfRow(s.vaLo) * vrr;
-          ctx.fillStyle = th.dark ? 'rgba(124,58,237,0.07)' : 'rgba(124,58,237,0.06)';
+          ctx.fillStyle = th.dark ? 'rgba(209,212,220,0.06)' : 'rgba(19,23,34,0.045)';
           ctx.fillRect(x0, ya, (o.extendVa ? fullEnd : xEnd) - x0, yb - ya);
         }
         // Single Prints hinterlegen
         if (o.singles) {
-          ctx.fillStyle = th.dark ? 'rgba(240,169,59,0.16)' : 'rgba(240,169,59,0.2)';
+          ctx.fillStyle = th.dark ? 'rgba(209,212,220,0.12)' : 'rgba(120,123,134,0.2)';
           for (const [a, b] of s.singles) {
             const ya = rowTop(b) * vrr, yb = yOfRow(a) * vrr;
             ctx.fillRect(x0, ya, cellW * 1.15, yb - ya);
@@ -192,7 +215,7 @@ export class TpoPaneView {
         // Initial Balance: Balken links
         if (o.ib && Number.isFinite(s.ibHi)) {
           const ya = pc(s.ibHi) * vrr, yb = pc(s.ibLo) * vrr;
-          ctx.fillStyle = s.ibDone ? '#2962ff' : 'rgba(41,98,255,0.5)';
+          ctx.fillStyle = s.ibDone ? '#787b86' : 'rgba(120,123,134,0.5)';
           ctx.fillRect(x0 - 4 * hr, ya, 2.5 * hr, yb - ya);
         }
         // Open / Close
@@ -213,7 +236,7 @@ export class TpoPaneView {
           ctx.setLineDash([]);
         };
         const lineEnd = o.extendVa ? fullEnd : Math.max(xEnd, x0 + (s.maxCount + 1) * cellW);
-        if (o.va && s.vah != null) { line(s.vah, th.dark ? 'rgba(167,139,250,0.9)' : 'rgba(124,58,237,0.85)', false, lineEnd); line(s.val, th.dark ? 'rgba(167,139,250,0.9)' : 'rgba(124,58,237,0.85)', false, lineEnd); }
+        if (o.va && s.vah != null) { const vc = th.dark ? 'rgba(209,212,220,0.9)' : 'rgba(19,23,34,0.9)'; line(s.vah, vc, false, lineEnd); line(s.val, vc, false, lineEnd); }
         if (o.poc && s.poc != null) line(s.poc, '#e91e63', false, lineEnd);
         // Volumenprofil rechts
         if (o.vp && s.vol && s.vol.length) {
@@ -226,7 +249,7 @@ export class TpoPaneView {
               const h = Math.max(1, yb - yt - (yb - yt > 3 * vrr ? 1 : 0));
               const w = s.vol[r] / mx * vpW;
               const inVa = s.vvaLo != null && r >= s.vvaLo && r <= s.vvaHi;
-              ctx.fillStyle = r === s.vpocRow ? (th.dark ? 'rgba(240,169,59,0.85)' : 'rgba(230,138,0,0.8)') : inVa ? (th.dark ? 'rgba(120,123,134,0.55)' : 'rgba(120,123,134,0.45)') : (th.dark ? 'rgba(120,123,134,0.28)' : 'rgba(120,123,134,0.22)');
+              ctx.fillStyle = r === s.vpocRow ? 'rgba(233,30,99,0.75)' : inVa ? (th.dark ? 'rgba(120,123,134,0.55)' : 'rgba(120,123,134,0.45)') : (th.dark ? 'rgba(120,123,134,0.28)' : 'rgba(120,123,134,0.22)');
               ctx.fillRect(right - w, yt, w, h);
             }
           }
@@ -234,6 +257,20 @@ export class TpoPaneView {
         // Trennlinie zur nächsten Session
         ctx.fillStyle = th.dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
         ctx.fillRect(Math.round(x0 - 8 * hr), 0, Math.max(1, hr), bitmapSize.height);
+        // Datum über dem Profil (bei zusammengefügten/geteilten Profilen mit Zeitraum), Auswahlrahmen
+        const yHi = pc(s.high), yLo = pc(s.low);
+        if (yHi != null) {
+          ctx.font = `600 ${Math.round(10 * vrr)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+          ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+          ctx.fillStyle = th.dark ? 'rgba(209,212,220,0.75)' : 'rgba(19,23,34,0.7)';
+          ctx.fillText(this.app.tpoLabel(s), x0, yHi * vrr - 4 * vrr);
+        }
+        if (this.app.tpoSel != null && this.app.tpoSel === s.start && yHi != null && yLo != null) {
+          ctx.strokeStyle = '#e91e63'; ctx.lineWidth = Math.max(1, 1.5 * hr);
+          ctx.setLineDash([5 * hr, 4 * hr]);
+          ctx.strokeRect(x0 - 3 * hr, yHi * vrr - 16 * vrr, Math.max(lineEnd, xEnd) - x0 + 6 * hr, (yLo - yHi) * vrr + 20 * vrr);
+          ctx.setLineDash([]);
+        }
       }
     });
   }

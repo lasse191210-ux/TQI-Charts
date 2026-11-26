@@ -134,6 +134,22 @@ body.right-closed .right { display: none; }
 .selbar .wbtn i { width: 16px; background: var(--text2); border-radius: 2px; }
 .selbar .wbtn.on { background: var(--accentw); }
 .vsep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; }
+.selbar .sb-t, .tpo-bar .sb-t { font-size: 12px; font-weight: 600; padding: 0 6px; white-space: nowrap; }
+.selbar .tb, .tpo-bar .tb { height: 28px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
+.tpo-bar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 9; display: none; align-items: center; gap: 2px; padding: 4px 6px; background: var(--glass); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); max-width: calc(100% - 16px); overflow-x: auto; }
+.tpo-bar.on { display: flex; }
+.tpo-bar .tb svg { width: 20px; height: 20px; }
+.tpo-bar .tb { display: inline-flex; align-items: center; gap: 4px; }
+.alert-list { padding: 6px 12px; display: flex; flex-direction: column; gap: 4px; }
+.al-row { display: grid; grid-template-columns: auto 1fr auto auto auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.al-row.fired { opacity: .6; }
+.al-row .muted { font-size: 11.5px; }
+.msep { padding: 8px 14px 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; border-top: 1px solid var(--border); margin-top: 4px; }
+.mi.act { display: flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 13px; }
+.mi.act svg { width: 20px; height: 20px; flex: none; }
+.mi.tpl { position: relative; }
+.mi.tpl .del { position: absolute; right: 8px; top: 8px; width: 28px; height: 28px; }
+.toast.alert { border-color: var(--text); font-weight: 600; }
 
 .loading { position: absolute; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; background: color-mix(in srgb, var(--bg) 55%, transparent); color: var(--text2); font-size: 13px; }
 .loading.on { display: flex; }
@@ -354,7 +370,8 @@ input[type=color]:disabled { opacity: .35; }
   .sym-row b { min-width: 0; }
   .sym-row .mk { display: none; }
   .toasts { bottom: 90px; }
-  .selbar { top: auto; bottom: 10px; }
+  .selbar { top: auto; bottom: 10px; max-width: calc(100% - 16px); overflow-x: auto; }
+  .tpo-bar { bottom: 10px; }
 }
 
 /* Vollbild-Chart */

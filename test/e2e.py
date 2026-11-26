@@ -195,6 +195,12 @@ FAKE_WS = """
           }
         }, 120);
       }
+      if (u.includes('bitstamp')) {
+        this._t = setInterval(() => {
+          px *= 1 + (Math.random() - 0.5) * 0.0006;
+          this._emit({ event: 'trade', channel: 'live_trades_btcusd', data: { price: px * 0.9988, amount: Math.random() * 0.5, type: Math.random() < 0.5 ? 0 : 1, microtimestamp: String(Date.now() * 1000) } });
+        }, 200);
+      }
       if (u.includes('@depth@100ms')) {
         let id = 1001, prev = 995;
         this._d = setInterval(() => {
@@ -254,8 +260,37 @@ def serve():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
+BS_STEP = {60: '1m', 180: '3m', 300: '5m', 900: '15m', 1800: '30m', 3600: '1h', 7200: '2h', 14400: '4h', 21600: '6h', 43200: '12h', 86400: '1d'}
+def bitstamp(url):
+    # Bitstamp-Format, Preise leicht unter Binance (USD statt USDT), anderes Volumen
+    u = urlparse(url); q = parse_qs(u.query); p = u.path
+    m = re.match(r'/api/v2/ohlc/([a-z]+)usd/', p)
+    if m:
+        f = factor_for(m.group(1).upper()) * 0.9988
+        step = int(q.get('step', ['900'])[0]); iv = BS_STEP.get(step, '15m')
+        limit = min(1000, int(q.get('limit', ['500'])[0]))
+        end = int(q['end'][0]) * 1000 if 'end' in q else None
+        start = int(q['start'][0]) * 1000 if 'start' in q else None
+        T, O, H, L, C, V, B = series(iv, 1.0)
+        mk = np.ones(len(T), bool)
+        if end is not None: mk &= T <= end
+        if start is not None: mk &= T >= start
+        idx = np.flatnonzero(mk)
+        idx = idx[:limit] if start is not None and end is None else idx[-limit:]
+        wob = lambda i: 0.6 + 0.8 * (((int(T[i]) // 900000) * 2654435761) % 1000) / 1000
+        return {'data': {'pair': m.group(1).upper() + '/USD', 'ohlc': [{'timestamp': str(int(T[i]) // 1000), 'open': f'{O[i]*f:.2f}', 'high': f'{H[i]*f:.2f}', 'low': f'{L[i]*f:.2f}', 'close': f'{C[i]*f:.2f}', 'volume': f'{V[i]*0.05*wob(i):.6f}'} for i in idx]}}
+    if '/ticker/' in p:
+        return {'last': f'{LAST*0.9988:.2f}', 'open_24': f'{LAST*0.99:.2f}', 'open': f'{LAST*0.99:.2f}', 'volume': '1234.5'}
+    if '/transactions/' in p:
+        return [{'date': str(NOW // 1000 - i * 7), 'price': f'{LAST*0.9988:.2f}', 'amount': '0.5', 'tid': str(i), 'type': str(i % 2)} for i in range(200)]
+    return None
+
 def route_handler(route):
     url = route.request.url
+    if 'bitstamp' in url:
+        data = bitstamp(url)
+        if data is not None:
+            return route.fulfill(status=200, content_type='application/json', headers={'Access-Control-Allow-Origin': '*'}, body=json.dumps(data))
     if 'binance' in url:
         data = api(url)
         if data is not None:
@@ -274,6 +309,7 @@ def run(scenario='all'):
                 ctx.add_init_script(f"localStorage.setItem('tqi-charts:v1', {json.dumps(json.dumps(storage))});")
             ctx.route(re.compile(r'https://(fapi|api|data-api)\.binance(\.vision|\.com).*'), route_handler)
             ctx.route(re.compile(r'https://(api\.bybit|www\.okx|api\.exchange\.coinbase)\.com.*'), route_handler)
+            ctx.route(re.compile(r'https://www\.bitstamp\.net/.*'), route_handler)
             page = ctx.new_page()
             page.on('console', lambda m: errors.append(f'[{m.type}] {m.text}') if m.type in ('error', 'warning') else None)
             page.on('pageerror', lambda e: errors.append(f'[pageerror] {e}'))

@@ -3,7 +3,7 @@
 import { MIN, HOUR, DAY, tfMinutes, floorTf, sleep } from './util.js';
 
 // ---------------------------------------------------------------- HTTP (mit Begrenzung je Börse)
-const LIMITS = { 'www.okx.com': { conc: 3, gap: 120 }, 'api.exchange.coinbase.com': { conc: 3, gap: 140 }, 'api.bybit.com': { conc: 6, gap: 20 } };
+const LIMITS = { 'www.okx.com': { conc: 3, gap: 120 }, 'api.exchange.coinbase.com': { conc: 3, gap: 140 }, 'api.bybit.com': { conc: 6, gap: 20 }, 'www.bitstamp.net': { conc: 3, gap: 150 } };
 const hostState = new Map();
 async function slot(host) {
   const L = LIMITS[host] || { conc: 8, gap: 0 };
@@ -592,6 +592,46 @@ const coinbaseSpot = {
   },
 };
 
+// ---------------------------------------------------------------- Bitstamp (BTCUSD wie TradingView-Standard)
+const BS_IV = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '2h': 7200, '4h': 14400, '6h': 21600, '12h': 43200, '1D': 86400 };
+const bitstampSpot = {
+  intervals: BS_IV,
+  maxLimit: 1000,
+  minFullPage: 900,
+  async fetchPage(pair, tf, { endTime, limit }) {
+    const q = { step: this.intervals[tf], limit: Math.min(1000, Math.max(2, limit)) };
+    if (endTime != null) q.end = Math.floor(endTime / 1000);
+    const j = await getJson(`https://www.bitstamp.net/api/v2/ohlc/${pair}/?${qs(q)}`);
+    const arr = j?.data?.ohlc;
+    if (!Array.isArray(arr)) { const e = new Error(j?.errors?.[0]?.message || j?.reason || 'Bitstamp-Fehler'); e.status = 400; throw e; }
+    return arr.map(x => ({ t: +x.timestamp * 1000, o: +x.open, h: +x.high, l: +x.low, c: +x.close, v: +x.volume, bv: NaN }));
+  },
+  tradeSocket(pair, onTrade, onStatus) {
+    return new LiveSocket({
+      url: 'wss://ws.bitstamp.net', name: 'trades', onStatus,
+      ping: { ms: 20000, data: { event: 'bts:heartbeat' } },
+      onOpen: (s) => s.send({ event: 'bts:subscribe', data: { channel: `live_trades_${pair}` } }),
+      onMessage: (m) => {
+        if (m.event !== 'trade' || !m.data) return;
+        const d = m.data;
+        const t = d.microtimestamp ? Math.floor(+d.microtimestamp / 1000) : +d.timestamp * 1000;
+        onTrade({ t, p: +d.price, q: +d.amount, buy: +d.type === 0 });
+      },
+    }).start();
+  },
+  /** Bitstamp liefert Trades nur für den letzten Tag (ein Abruf). */
+  async *tradeHistory(pair) {
+    const j = await getJson(`https://www.bitstamp.net/api/v2/transactions/${pair}/?time=day`);
+    if (!Array.isArray(j)) return;
+    yield { trades: j.map(x => ({ t: +x.date * 1000, p: +x.price, q: +x.amount, buy: +x.type === 0 })), pace: 0 };
+  },
+  async fetchTicker(pair) {
+    const j = await getJson(`https://www.bitstamp.net/api/v2/ticker/${pair}/`, { retries: 0 });
+    const o = +j.open_24 || +j.open;
+    return { last: +j.last, chg: (+j.last / o - 1) * 100, vol: +j.volume * +j.last };
+  },
+};
+
 // ---------------------------------------------------------------- Märkte
 const K1000 = new Set(['PEPE', 'BONK', 'FLOKI']);
 export const MARKETS = {
@@ -627,6 +667,11 @@ export const MARKETS = {
     ad: coinbaseSpot, delta: false, oi: false, funding: false, liq: false, dom: false,
     inst: (b) => b + '-USD', ticker: (b) => b + 'USD', quote: 'USD', desc: 'Spot',
   },
+  'bitstamp-spot': {
+    id: 'bitstamp-spot', exchange: 'Bitstamp', type: 'Spot', label: 'Bitstamp Spot', badge: 'BITSTAMP',
+    ad: bitstampSpot, delta: false, oi: false, funding: false, liq: false, dom: false,
+    inst: (b) => b.toLowerCase() + 'usd', ticker: (b) => b + 'USD', quote: 'USD', desc: 'Spot (TradingView-Standard für BTCUSD)',
+  },
 };
 
 /** Kerzen laden (aufsteigend). */
@@ -635,4 +680,4 @@ export function fetchBars(marketId, base, tf, opts) {
   return fetchBarsGeneric(m.ad, m.inst(base), tf, opts);
 }
 
-export const _test = { aggregate, dedupeSort, parseBinanceKlines, fetchBarsGeneric, okxPerp, coinbaseSpot, bybitPerp, binancePerp };
+export const _test = { aggregate, dedupeSort, parseBinanceKlines, fetchBarsGeneric, okxPerp, coinbaseSpot, bybitPerp, binancePerp, bitstampSpot };

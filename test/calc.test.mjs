@@ -195,3 +195,46 @@ test('Zeitraster', () => {
   assert.equal(nextTf(t, '1M'), Date.UTC(2026, 11, 1));
   assert.equal(floorTf(t, '1W'), Date.UTC(2026, 10, 23));
 });
+
+// ---------------------------------------------------------------- 1.1: Sessions, TPO zusammenfügen/teilen
+import { Sessions } from '../js/util.js';
+import { buildTpoSessions } from '../js/render/tpo.js';
+
+test('Sessions: eigene Zeiten (Berlin, Sommer/Winter) und CME ohne Wochenende', () => {
+  const c = new Sessions({ mode: 'custom', start: '02:00', end: '22:00', tz: 'Europe/Berlin' });
+  assert.deepEqual(c.of(Date.UTC(2026, 10, 26, 12)).slice(0, 2), [Date.UTC(2026, 10, 26, 1), Date.UTC(2026, 10, 26, 21)]);
+  assert.deepEqual(c.of(Date.UTC(2026, 6, 1, 12)).slice(0, 2), [Date.UTC(2026, 6, 1, 0), Date.UTC(2026, 6, 1, 20)]);
+  assert.equal(c.of(Date.UTC(2026, 10, 26, 22)), null);
+  const m = new Sessions({ mode: 'cme' });
+  assert.deepEqual(m.of(Date.UTC(2026, 10, 27, 10)).slice(0, 2), [Date.UTC(2026, 10, 26, 23), Date.UTC(2026, 10, 27, 22)]);
+  assert.equal(m.of(Date.UTC(2026, 10, 28, 12)), null); // Samstag
+  const u = new Sessions({ mode: 'utc' });
+  assert.deepEqual(u.of(Date.UTC(2026, 10, 26, 16, 26)).slice(0, 2), [Date.UTC(2026, 10, 26), Date.UTC(2026, 10, 27)]);
+});
+
+test('Tagesprofile nur aus Kerzen in der Session', () => {
+  const sess = new Sessions({ mode: 'custom', start: '02:00', end: '22:00', tz: 'Europe/Berlin' });
+  const days = buildDayProfiles(m30, { rowSize: 10, sess, now: T0 + 40 * DAY });
+  const d = days[5];
+  // 20 Stunden = 40 Perioden à 30 Min.
+  assert.equal(d.nPeriods, 40);
+  assert.equal(d.end - d.start, 20 * HOUR);
+});
+
+test('TPO: Profile zusammenfügen und teilen', () => {
+  const blockMs = 30 * MIN;
+  const base = buildTpoSessions(m30, { rowSize: 10, blockMs });
+  const a = base[3], b = base[4];
+  const merged = buildTpoSessions(m30, { rowSize: 10, blockMs, merges: [[a.start, b.end]] });
+  assert.equal(merged.length, base.length - 1);
+  const mm = merged.find(s => s.start === a.start);
+  assert.ok(mm.merged);
+  const cnt = (s) => s.rows.reduce((x, r) => x + r.length, 0);
+  assert.equal(cnt(mm), cnt(a) + cnt(b));
+  const sp = a.start + 10 * HOUR;
+  const split = buildTpoSessions(m30, { rowSize: 10, blockMs, splits: [sp] });
+  assert.equal(split.length, base.length + 1);
+  const p1 = split.find(s => s.start === a.start), p2 = split.find(s => s.start === sp);
+  assert.equal(cnt(p1) + cnt(p2), cnt(a));
+  assert.equal(p1.end, sp);
+});

@@ -139,10 +139,9 @@ export class DataHub extends Emitter {
     const p = `${marketId}|${base}|`;
     return [...this.stores.values()].filter(s => s.key.startsWith(p));
   }
-  /** Speicher anderer Symbole wegwerfen (Speicher sparen). */
+  /** Speicher anderer Coins wegwerfen (Speicher sparen). Andere Börsen desselben Coins bleiben (Indikator-Daten). */
   prune(marketId, base) {
-    const p = `${marketId}|${base}|`;
-    for (const k of [...this.stores.keys()]) if (!k.startsWith(p)) this.stores.delete(k);
+    for (const k of [...this.stores.keys()]) if (k.split('|')[1] !== base) this.stores.delete(k);
   }
 
   startLive(marketId, base, chartTf) {

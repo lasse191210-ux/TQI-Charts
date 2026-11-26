@@ -1,15 +1,18 @@
 // Zeichenwerkzeuge wie in TradingView: Trendlinie, Strahl, horizontale Linie/Strahl, vertikale Linie,
 // Rechteck, Fibonacci, Preisspanne (Messen), Text, Long-/Short-Position. Speicherung je Coin im Browser.
-import { storage, floorIndex, tfMs, fmtPct, fmtDateTime, rgba, uid, nf, fmtCompact } from '../util.js';
+import { storage, floorIndex, tfMs, fmtPct, fmtDateTime, rgba, uid, nf, fmtCompact, lowerBound, niceStep } from '../util.js';
 import { rangeProfile, autoRows } from '../calc/vprofile.js';
+import { valueArea } from '../calc/profile.js';
 import { drawProfile } from './vpdraw.js';
+import { letterOf } from './tpo.js';
+import { ALERT_CONDS } from '../alerts.js';
 
 export const TOOLS = [
   ['cursor', 'Kreuz'], ['trend', 'Trendlinie'], ['ray', 'Strahl'], ['hline', 'Horizontale Linie'], ['hray', 'Horizontaler Strahl'],
-  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'], ['fvp', 'Fixed Range Volume Profile'], ['avwap', 'Anchored VWAP'],
-  ['text', 'Text'], ['long', 'Long-Position'], ['short', 'Short-Position'],
+  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'], ['fvp', 'Fixed Range Volume Profile'], ['ftpo', 'Fixed Range TPO'], ['avwap', 'Anchored VWAP'],
+  ['text', 'Text'], ['long', 'Long-Position'], ['short', 'Short-Position'], ['alert', 'Alarm (Preis)'],
 ];
-const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap']);
+const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap', 'alert']);
 const FIB = [[0, '#787b86'], [0.236, '#f23645'], [0.382, '#ff9800'], [0.5, '#4caf50'], [0.618, '#089981'], [0.786, '#00bcd4'], [1, '#787b86'], [1.618, '#2962ff']];
 export const COLORS = ['#2962ff', '#e91e63', '#7c3aed', '#f0a93b', '#26a69a', '#ef5350', '#131722', '#ffffff'];
 
@@ -180,6 +183,8 @@ export class Drawings {
     const base = { id: uid(), type, pts: [pt, { ...pt }], color: type === 'long' || type === 'short' ? null : '#2962ff', width: 2 };
     if (type === 'hline' || type === 'hray') base.color = '#7c3aed';
     if (type === 'avwap') { base.color = '#2962ff'; base.width = 2; base.src = 'hlc3'; base.bands = 1; }
+    if (type === 'alert') { base.color = '#131722'; base.width = 1; base.cond = 'cross'; this.app.alerts?.askPermission(); }
+    if (type === 'ftpo') { base.color = '#131722'; base.width = 1; base.block = '30m'; base.vaPct = 68; base.clip = false; base.mode = 'letters'; }
     if (type === 'text') {
       const txt = window.prompt('Text', '');
       if (!txt) { this.setTool('cursor'); return null; }
@@ -199,12 +204,14 @@ export class Drawings {
     this.sel = it;
     this.setTool('cursor');
     this._changed();
+    if (it.type === 'ftpo') this.app.ensureNeeds();
   }
 
   _dragTo(x, y) {
     const d = this.drag, it = d.item;
     const pt = this.pointAt(x, y);
     if (!pt) return;
+    if (it.type === 'alert') it.fired = null;
     const p0 = this.pointAt(d.x0, d.y0);
     if (it.type === 'avwap') { it.pts[0] = { t: d.handle === 0 ? pt.t : this.lToT(Math.round(this.tToL(d.orig[0].t) + this.tToL(pt.t) - this.tToL(p0.t))), p: pt.p }; this._axisViews = this._buildAxis(); this.requestUpdate?.(); return; }
     if (d.handle === 'stop') it.stop = pt.p;
@@ -241,8 +248,8 @@ export class Drawings {
       if (this.sel === it && it.type === 'avwap') {
         const r = this._avwap(it);
         if (r && near(this.tToX(this.app.bars[r.i0].t), this.pToY(r.v[0]))) return { item: it, handle: 0 };
-      } else if (this.sel === it && it.type === 'fvp') {
-        const b = this._fvpBox(it);
+      } else if (this.sel === it && (it.type === 'fvp' || it.type === 'ftpo')) {
+        const b = it.type === 'fvp' ? this._fvpBox(it) : this._ftpoBox(it);
         const first = it.pts[0].t <= it.pts[1].t ? 0 : 1;
         if (b && near(b.xa, b.yt)) return { item: it, handle: first };
         if (b && near(b.xb, b.yb)) return { item: it, handle: 1 - first };
@@ -269,12 +276,12 @@ export class Drawings {
           for (const p of ys) { const py = this.pToY(p); if (py != null && Math.abs(py - y) < 6) return { item: it }; }
           break;
         }
-        case 'fvp': {
-          const b = this._fvpBox(it);
+        case 'fvp': case 'ftpo': {
+          const b = it.type === 'fvp' ? this._fvpBox(it) : this._ftpoBox(it);
           if (b && x >= b.xa - 4 && x <= b.xb + 4 && y >= b.yt - 4 && y <= b.yb + 4) return { item: it };
           break;
         }
-        case 'hline': if (Math.abs(y - g.y1) < 6) return { item: it }; break;
+        case 'hline': case 'alert': if (Math.abs(y - g.y1) < 6) return { item: it }; break;
         case 'hray': if (Math.abs(y - g.y1) < 6 && x >= g.x1 - 6) return { item: it }; break;
         case 'vline': if (g.x1 != null && Math.abs(x - g.x1) < 6) return { item: it }; break;
         case 'trend': case 'ray': {
@@ -311,6 +318,11 @@ export class Drawings {
     for (const it of this.items) {
       if (it.type === 'avwap') { const r = this._avwap(it); if (r && r.v.length) add(r.v[r.v.length - 1], it.color); continue; }
       if (it.type === 'hline' || it.type === 'hray') add(it.pts[0].p, it.color);
+      else if (it.type === 'alert') add(it.pts[0].p, it.fired ? '#787b86' : (this.app.theme.dark ? '#5d606b' : '#131722'));
+      else if (it === this.sel && it.type === 'ftpo') {
+        const p = this._ftpo(it);
+        if (p && p.poc != null) { add(p.poc, '#e91e63'); add(p.vah, '#131722'); add(p.val, '#131722'); }
+      }
       else if (it === this.sel && it.type === 'fvp') {
         const p = this._fvp(it);
         if (p) { add(p.poc, '#f0961e'); add(p.vah, '#5b7fe0'); add(p.val, '#5b7fe0'); }
@@ -489,6 +501,69 @@ export class Drawings {
             handles.push([b.xa, b.yt], [b.xb, b.yb]);
             break;
           }
+          case 'alert': {
+            const y = Math.round(Y(g.y1)) + 0.5;
+            const c = it.fired ? '#787b86' : (th.dark ? '#d1d4dc' : '#131722');
+            ctx.strokeStyle = c; ctx.lineWidth = Math.max(1, hr);
+            ctx.setLineDash([6 * hr, 4 * hr]);
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+            ctx.setLineDash([]);
+            const cond = (ALERT_CONDS.find(q => q[0] === (it.cond || 'cross')) || ALERT_CONDS[0])[1];
+            const txt = it.fired ? `Alarm ausgelöst · ${this.app.fmt(it.pts[0].p)}` : `Alarm: ${cond} ${this.app.fmt(it.pts[0].p)}`;
+            ctx.font = font(10.5, 600); ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+            const tw = ctx.measureText(txt).width;
+            const bx = W - tw - 30 * hr;
+            bell(ctx, bx - 12 * hr, y - 13 * vr, 9 * hr, c);
+            ctx.fillStyle = c; ctx.fillText(txt, W - 26 * hr, y - 3 * vr);
+            if (g.x1 != null) handles.push([g.x1, g.y1]);
+            break;
+          }
+          case 'ftpo': {
+            const b = this._ftpoBox(it);
+            if (!b) break;
+            const p = b.p;
+            const ink = th.dark ? '#d1d4dc' : '#131722';
+            ctx.fillStyle = rgba(ink, sel ? 0.05 : 0.025);
+            ctx.fillRect(X(b.xa), Y(b.yt), X(b.xb - b.xa), Y(b.yb - b.yt));
+            if (sel) { ctx.strokeStyle = rgba(ink, 0.5); ctx.lineWidth = Math.max(1, hr); ctx.setLineDash([4 * hr, 3 * hr]); ctx.strokeRect(X(b.xa), Y(b.yt), X(b.xb - b.xa), Y(b.yb - b.yt)); ctx.setLineDash([]); }
+            const boxW = X(b.xb - b.xa);
+            const cw = Math.max(1.5 * hr, Math.min(12 * hr, boxW * 0.85 / Math.max(1, p.maxCount)));
+            const yRow = (k) => { const yy = this.pToY((p.r0 + k) * p.rs); return yy == null ? null : Y(yy); };
+            const rowH = Math.abs((yRow(0) ?? 0) - (yRow(1) ?? 0));
+            const letters = it.mode !== 'blocks' && rowH >= 8 * vr && cw >= 6 * hr;
+            const xa = X(b.xa);
+            if (letters) { ctx.font = `600 ${Math.round(Math.max(7 * vr, Math.min(rowH * 0.9, cw * 1.1, 13 * vr)))}px -apple-system, "Segoe UI", Roboto, monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
+            for (let r = 0; r < p.rows.length; r++) {
+              const list = p.rows[r];
+              if (!list.length) continue;
+              const yt = yRow(r + 1), yb = yRow(r);
+              if (yt == null || yb == null || yb < -10 || yt > H + 10) continue;
+              const isPoc = r === p.pocRow, inVa = r >= p.vaLo && r <= p.vaHi;
+              if (letters) {
+                ctx.fillStyle = isPoc ? '#e91e63' : rgba(ink, inVa ? 0.95 : 0.6);
+                for (let j = 0; j < list.length; j++) ctx.fillText(letterOf(list[j]), xa + (j + 0.5) * cw, (yt + yb) / 2);
+              } else {
+                const h = Math.max(1, yb - yt - (yb - yt > 3 * vr ? 1 : 0));
+                ctx.fillStyle = isPoc ? 'rgba(233,30,99,0.8)' : rgba(ink, inVa ? 0.5 : 0.25);
+                ctx.fillRect(xa, yt, list.length * cw, h);
+              }
+            }
+            const ln = (price, c, txt) => {
+              const yy = this.pToY(price); if (yy == null) return;
+              const y = Math.round(Y(yy)) + 0.5;
+              ctx.strokeStyle = c; ctx.lineWidth = Math.max(1, hr);
+              ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(X(b.xb), y); ctx.stroke();
+              ctx.font = font(10.5, 600); ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillStyle = c;
+              ctx.fillText(`${txt} ${this.app.fmt(price)}`, X(b.xb) - 4 * hr, y - 2 * vr);
+            };
+            if (p.vah != null) { ln(p.vah, ink, 'VAH'); ln(p.val, ink, 'VAL'); }
+            if (p.poc != null) ln(p.poc, '#e91e63', 'POC');
+            ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = font(10.5, 500);
+            ctx.fillStyle = th.dark ? '#b2b5be' : '#50535e';
+            ctx.fillText(`TPO · ${p.n} Perioden à ${it.block || '30m'}${it.clip ? ' · Preisbereich' : ''}`, xa + 2 * hr, Y(b.yb) + 4 * vr);
+            handles.push([b.xa, b.yt], [b.xb, b.yb]);
+            break;
+          }
           case 'text': {
             if (g.x1 == null) break;
             ctx.font = font(13, 600); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -598,6 +673,72 @@ Drawings.prototype._fvpBox = function (it) {
   return { p, xa: xa - half, xb: xb + half, yt, yb };
 };
 
+// ---------------------------------------------------------------- Fixed Range TPO
+/** TPO-Profil über einen frei gewählten Zeitraum (optional nur im gezogenen Preisbereich). */
+Drawings.prototype._ftpo = function (it) {
+  const app = this.app, bars = app.bars;
+  if (!bars.length) return null;
+  const step = this._step();
+  const t0 = Math.min(it.pts[0].t, it.pts[1].t), t1 = Math.max(it.pts[0].t, it.pts[1].t) + step;
+  const block = it.block || '30m', blockMs = tfMs(block);
+  const st = app.hub.stores.get(`${app.state.market}|${app.state.base}|${block}`);
+  const src = st && st.bars.length && st.bars[0].t <= t0 ? st.bars : bars;
+  const last = src[src.length - 1];
+  const pLo = Math.min(it.pts[0].p, it.pts[1].p), pHi = Math.max(it.pts[0].p, it.pts[1].p);
+  const rsBase = app.tpoRowSize ? app.tpoRowSize() : app.rowSize();
+  const key = `${t0}|${t1}|${block}|${it.clip ? pLo + '|' + pHi : ''}|${it.vaPct}|${rsBase}|${app.vaStep}|${src.length}|${last?.t}|${last?.h}|${last?.l}`;
+  if (it._t && it._t.key === key) return it._t.p;
+  // Perioden (Blöcke) bilden
+  const per = [];
+  for (let i = lowerBound(src, t0); i < src.length && src[i].t < t1; i++) {
+    const b = src[i], k = Math.floor(b.t / blockMs) * blockMs;
+    const x = per[per.length - 1];
+    if (x && x.t === k) { if (b.h > x.h) x.h = b.h; if (b.l < x.l) x.l = b.l; } else per.push({ t: k, h: b.h, l: b.l });
+  }
+  let p = null;
+  if (per.length) {
+    let lo = Infinity, hi = -Infinity;
+    for (const x of per) { if (x.l < lo) lo = x.l; if (x.h > hi) hi = x.h; }
+    if (it.clip) { lo = Math.max(lo, pLo); hi = Math.min(hi, pHi); }
+    if (hi > lo) {
+      let rs = it.rows > 0 ? it.rows : rsBase;
+      if ((hi - lo) / rs > 600) rs = niceStep((hi - lo) / 300);
+      const r0 = Math.floor(lo / rs), n = Math.floor(hi / rs) - r0 + 1;
+      const rows = Array.from({ length: n }, () => []);
+      per.forEach((x, k) => {
+        const a = Math.max(0, Math.floor(Math.max(x.l, lo) / rs) - r0), z = Math.min(n - 1, Math.floor(Math.min(x.h, hi) / rs) - r0);
+        for (let r = a; r <= z; r++) rows[r].push(k);
+      });
+      const counts = rows.map(r => r.length);
+      const va = valueArea(counts, it.vaPct || 68, app.vaStep || 2);
+      p = { rows, r0, rs, n: per.length, lo: r0 * rs, hi: (r0 + n) * rs, maxCount: Math.max(...counts) };
+      if (va) Object.assign(p, { pocRow: va.poc, vaLo: va.lo, vaHi: va.hi, poc: (r0 + va.poc + 0.5) * rs, vah: (r0 + va.hi + 1) * rs, val: (r0 + va.lo) * rs });
+    }
+  }
+  Object.defineProperty(it, '_t', { value: { key, p }, writable: true, configurable: true, enumerable: false });
+  return p;
+};
+Drawings.prototype._ftpoBox = function (it) {
+  const p = this._ftpo(it);
+  if (!p) return null;
+  const half = (this.chart.timeScale().options().barSpacing || 6) / 2;
+  const t0 = Math.min(it.pts[0].t, it.pts[1].t), t1 = Math.max(it.pts[0].t, it.pts[1].t);
+  const xa = this.tToX(t0), xb = this.tToX(t1), yt = this.pToY(p.hi), yb = this.pToY(p.lo);
+  if (xa == null || xb == null || yt == null || yb == null) return null;
+  return { p, xa: xa - half, xb: xb + half, yt, yb };
+};
+
+function bell(ctx, x, y, s, c) {
+  ctx.save();
+  ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = Math.max(1, s / 7);
+  ctx.beginPath();
+  ctx.moveTo(x + s * 0.15, y + s * 0.75);
+  ctx.quadraticCurveTo(x + s * 0.2, y + s * 0.05, x + s * 0.5, y + s * 0.05);
+  ctx.quadraticCurveTo(x + s * 0.8, y + s * 0.05, x + s * 0.85, y + s * 0.75);
+  ctx.closePath(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x + s * 0.5, y + s * 0.9, s * 0.12, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
 function segDist(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;
   const l2 = dx * dx + dy * dy;

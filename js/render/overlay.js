@@ -291,6 +291,15 @@ export class OverlayPrimitive {
           const x = xOf(i), y0 = yOf(m.p);
           if (x == null || y0 == null) continue;
           const s = m.size * hr;
+          if (m.shape === 'text') {
+            // nur Text (z. B. „sfp“ wie in ATAS): über dem Hoch bzw. unter dem Tief
+            ctx.fillStyle = m.color;
+            ctx.font = `600 ${Math.round(10.5 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = m.below ? 'top' : 'bottom';
+            ctx.fillText(m.text || '', x, m.below ? y0 + 4 * vr2 : y0 - 4 * vr2);
+            ctx.font = `600 ${Math.round(9 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+            continue;
+          }
           const up = m.shape === 'up';
           const y = up ? y0 + 6 * vr2 + s : y0 - 6 * vr2 - s;
           ctx.fillStyle = m.color;

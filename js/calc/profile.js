@@ -45,15 +45,17 @@ export function autoRowSize(dailyBars) {
  * Tagesprofile aus 30m-Kerzen. rowSize in Preis-Einheiten, Raster global (Zeile = floor(Preis/rowSize)).
  * Jede Kerze = eine TPO-Periode; Volumen wird gleichmäßig auf die berührten Zeilen verteilt.
  */
-export function buildDayProfiles(bars, { rowSize, offset = 0, now = Date.now() }) {
+export function buildDayProfiles(bars, { rowSize, offset = 0, now = Date.now(), sess = null }) {
   const days = [];
   let d = null;
   for (let i = 0; i < bars.length; i++) {
     const b = bars[i];
-    const ds = periodStart(b.t, 'day', offset);
+    let ds, de, day;
+    if (sess) { const x = sess.of(b.t); if (!x) continue; [ds, de, day] = x; }
+    else { ds = periodStart(b.t, 'day', offset); de = ds + DAY; day = ds; }
     if (!d || d.start !== ds) {
       if (d) finishDay(d);
-      d = { start: ds, end: ds + DAY, first: i, last: i, o: b.o, h: b.h, l: b.l, c: b.c, v: 0, periods: [], partialStart: i === 0 && b.t > ds };
+      d = { start: ds, end: de, day, first: i, last: i, o: b.o, h: b.h, l: b.l, c: b.c, v: 0, periods: [], partialStart: !days.length && bars[0].t > ds };
       days.push(d);
     }
     d.last = i;
