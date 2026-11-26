@@ -219,10 +219,13 @@ function binanceBase(perp) {
     depthSocket(symbol, onBook, onStatus) {
       return binanceBook(perp, symbol, onBook, onStatus);
     },
-    /** Trades rückwärts (neueste zuerst), Seiten zu 1000 aggTrades. Futures: Gewicht 20 je Abfrage → Pause 650 ms. */
+    /**
+     * Trades rückwärts (neueste zuerst), Seiten zu 1000 aggTrades.
+     * Futures: Gewicht 20 je Abfrage, Grenze 2400/Min. → höchstens 40 Abfragen/Min. (800), damit nie eine Sperre droht.
+     */
     async *tradeHistory(symbol) {
       const path = perp ? '/fapi/v1/aggTrades' : '/api/v3/aggTrades';
-      const pace = perp ? 650 : 220;
+      const pace = perp ? 1500 : 300;
       const parse = (j) => j.map(x => ({ t: +x.T, p: +x.p, q: +x.q, buy: !x.m, id: +x.a }));
       let host = null, j = null, err;
       for (const h of this.hosts) {
