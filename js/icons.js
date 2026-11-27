@@ -10,6 +10,12 @@ export const ICON = {
   rect: s('<rect x="5" y="8" width="18" height="12" rx="1"/><circle cx="5" cy="8" r="1.8" fill="currentColor"/><circle cx="23" cy="20" r="1.8" fill="currentColor"/>'),
   fib: s('<path d="M4 6h20M4 11h20M4 15h20M4 19h20M4 23h20" stroke-width="1.2"/><path d="M6 23L22 6" stroke-dasharray="2 2"/>'),
   measure: s('<path d="M14 5v18M10 9l4-4 4 4M10 19l4 4 4-4M5 14h18"/>'),
+  channel: s('<path d="M4 17L17 5M11 23L24 11"/><path d="M7.5 20L20.5 8" stroke-dasharray="1.5 2.5" stroke-width="1.2"/><circle cx="4" cy="17" r="1.8" fill="currentColor"/><circle cx="17" cy="5" r="1.8" fill="currentColor"/><circle cx="17.5" cy="17" r="1.8" fill="currentColor"/>'),
+  arrow: s('<path d="M6 22L21 7"/><path d="M13 7h8v8" stroke-width="1.8"/>'),
+  note: s('<path d="M5 6h18a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 23 18H13l-5 5v-5H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 6z"/><path d="M8 10.5h12M8 14h8"/>'),
+  prange: s('<rect x="6" y="5" width="16" height="18" rx="1" stroke-dasharray="2 2" stroke-width="1.1"/><path d="M14 7v14M11 10l3-3 3 3M11 18l3 3 3-3"/>'),
+  drange: s('<rect x="5" y="6" width="18" height="16" rx="1" stroke-dasharray="2 2" stroke-width="1.1"/><path d="M7 14h14M10 11l-3 3 3 3M18 11l3 3-3 3"/>'),
+  chevR: s('<path d="M11 8l6 6-6 6"/>'),
   text: s('<path d="M7 7h14M14 7v15M11 22h6"/>'),
   long: s('<rect x="5" y="5" width="18" height="9" fill="#26a69a" fill-opacity=".25" stroke="#26a69a"/><rect x="5" y="14" width="18" height="7" fill="#ef5350" fill-opacity=".25" stroke="#ef5350"/>'),
   short: s('<rect x="5" y="5" width="18" height="7" fill="#ef5350" fill-opacity=".25" stroke="#ef5350"/><rect x="5" y="12" width="18" height="9" fill="#26a69a" fill-opacity=".25" stroke="#26a69a"/>'),
@@ -31,6 +37,11 @@ export const ICON = {
   chev: s('<path d="M9 12l5 5 5-5"/>'),
   chevUp: s('<path d="M9 16l5-5 5 5"/>'),
   close: s('<path d="M8 8l12 12M20 8L8 20"/>'),
+  replay: s('<path d="M6 7v14"/><path d="M22 7l-9 7 9 7z"/><path d="M14 7l-7 7"/>'.replace('<path d="M14 7l-7 7"/>', '')),
+  play: s('<path d="M9 6.5v15l12-7.5z" fill="currentColor" stroke-width="1.2"/>'),
+  pause: s('<path d="M9 6v16M19 6v16" stroke-width="2.6"/>'),
+  stepFwd: s('<path d="M7 7v14l10-7z" fill="currentColor" stroke-width="1.2"/><path d="M21 7v14" stroke-width="2"/>'),
+  scissors: s('<circle cx="8" cy="9" r="3"/><circle cx="8" cy="19" r="3"/><path d="M10.5 10.8L22 18M10.5 17.2L22 10"/>'),
   star: s('<path d="M14 5l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L14 18.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z"/>'),
   starFill: s('<path d="M14 5l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L14 18.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z" fill="currentColor"/>'),
   plus: s('<path d="M14 7v14M7 14h14"/>'),
@@ -47,6 +58,10 @@ export const ICON = {
   more: s('<circle cx="7" cy="14" r="1.6" fill="currentColor"/><circle cx="14" cy="14" r="1.6" fill="currentColor"/><circle cx="21" cy="14" r="1.6" fill="currentColor"/>'),
   pencil: s('<path d="M6 22l1-5L18 6l4 4L11 21z"/><path d="M16 8l4 4"/>'),
   undo: s('<path d="M10 9L6 13l4 4"/><path d="M6 13h11a5 5 0 0 1 0 10h-3"/>'),
+  redo: s('<path d="M18 9l4 4-4 4"/><path d="M22 13H11a5 5 0 0 0 0 10h3"/>'),
+  layers: s('<path d="M14 5l10 5-10 5-10-5 10-5z"/><path d="M4 14l10 5 10-5"/><path d="M4 18l10 5 10-5"/>'),
+  tree: s('<rect x="4" y="5" width="7" height="5" rx="1"/><rect x="15" y="12" width="9" height="4" rx="1"/><rect x="15" y="19" width="9" height="4" rx="1"/><path d="M7.5 10v11h7.5M7.5 14h7.5"/>'),
+  focus: s('<path d="M5 10V6a1 1 0 0 1 1-1h4M18 5h4a1 1 0 0 1 1 1v4M23 18v4a1 1 0 0 1-1 1h-4M10 23H6a1 1 0 0 1-1-1v-4"/><path d="M11 17v-6M14 19V9M17 16v-4"/>'),
   reset: s('<path d="M7 9a8 8 0 1 1-1 7"/><path d="M7 4v5h5"/>'),
   dot: s('<circle cx="14" cy="14" r="4" fill="currentColor" stroke="none"/>'),
   copy: s('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M6 18V7a1 1 0 0 1 1-1h11"/>'),
@@ -63,7 +78,7 @@ export const ICON = {
   footprint: s('<rect x="4" y="4" width="9" height="20" rx="1"/><rect x="15" y="7" width="9" height="15" rx="1"/><path d="M6.5 8.5h4M6.5 12h4M6.5 15.5h4M6.5 19h4M17.5 11h4M17.5 14.5h4M17.5 18h4" stroke-width="1.3"/>'),
   heatmap: s('<rect x="4" y="4" width="20" height="20" rx="2" stroke-width="1.2"/><path d="M4 9h20M4 14h20M4 19h20" stroke-width="1"/><rect x="9" y="9" width="10" height="5" fill="currentColor" fill-opacity=".85" stroke="none"/><rect x="5" y="14" width="18" height="5" fill="currentColor" fill-opacity=".35" stroke="none"/><rect x="14" y="19" width="9" height="4" fill="currentColor" fill-opacity=".6" stroke="none"/>'),
 };
-export const TOOL_ICON = { cursor: 'cursor', trend: 'trend', ray: 'ray', hline: 'hline', hray: 'hray', vline: 'vline', rect: 'rect', fib: 'fib', measure: 'measure', text: 'text', long: 'long', short: 'short', fvp: 'fvp', ftpo: 'ftpo', avwap: 'avwap', alert: 'alert' };
+export const TOOL_ICON = { cursor: 'cursor', trend: 'trend', ray: 'ray', hline: 'hline', hray: 'hray', vline: 'vline', rect: 'rect', fib: 'fib', measure: 'measure', channel: 'channel', arrow: 'arrow', note: 'note', prange: 'prange', drange: 'drange', text: 'text', long: 'long', short: 'short', fvp: 'fvp', ftpo: 'ftpo', avwap: 'avwap', alert: 'alert' };
 export const CHART_TYPES = [['tpo', 'TPO (Market Profile)'], ['candles', 'Kerzen'], ['hollow', 'Hohle Kerzen'], ['bars', 'Balken'], ['line', 'Linie'], ['area', 'Fläche'], ['ha', 'Heikin Ashi']];
 const COIN_COLORS = { BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', XRP: '#23292f', BNB: '#f3ba2f', DOGE: '#c2a633', HYPE: '#50e3c2', SUI: '#4da2ff', LINK: '#2a5ada', AVAX: '#e84142', ADA: '#0033ad', TRX: '#ff060a', TON: '#0098ea', LTC: '#345d9d', PEPE: '#3d8b37', ETC: '#328332' };
 export function coinBadge(base, size = 22) {

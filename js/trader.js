@@ -115,7 +115,7 @@ export class Trader {
   async start() {
     this.render();
     if (!this.key) return;
-    try { await this.syncTime(); await this.instrument(); await this.refresh(); this.connectWs(); }
+    try { await this.syncTime(); await this.instrument(); await this.refresh(); this.connectWs(); this.app.journal?.loadFills(); }
     catch (e) { this.err = e.message; this.render(); }
   }
   async refresh() {
@@ -160,7 +160,7 @@ export class Trader {
         this.render(); return;
       }
       const sym = this.symbol;
-      if (m.topic === 'position') { for (const x of m.data || []) if (x.symbol === sym) this.setPos(x); this.render(); this.redraw(); }
+      if (m.topic === 'position') { for (const x of m.data || []) if (x.symbol === sym) this.setPos(x); this.render(); this.redraw(); this.app.journal?.touch(); }
       else if (m.topic === 'order') {
         for (const x of m.data || []) {
           if (x.symbol !== sym) continue;
@@ -182,7 +182,7 @@ export class Trader {
   }
   stopWs() { const w = this.ws; this.ws = null; this.wsState = 'aus'; try { w?.close(); } catch { /* egal */ } }
   /** Coin gewechselt: Position/Orders des neuen Symbols laden. */
-  onSymbol() { this.pos = null; this.orders = []; this.plan = { entry: null, stop: null, target: null }; if (this.key && this.open) { this.instrument().then(() => this.refresh()).catch(e => { this.err = e.message; this.render(); }); } else this.render(); }
+  onSymbol() { this.pos = null; this.orders = []; this.plan = { entry: null, stop: null, target: null }; this.app.journal?.onSymbol(); if (this.key && this.open) { this.instrument().then(() => this.refresh()).catch(e => { this.err = e.message; this.render(); }); } else this.render(); }
 
   // ---------------------------------------------------------------- Rechnung
   /** Entry für die Rechnung: bei Market der aktuelle Kurs. */
@@ -282,6 +282,7 @@ export class Trader {
         catch (e) { if (e.code !== 110043) throw e; }
       }
       const r = await this.req('POST', '/v5/order/create', params);
+      this.app.journal?.addPlan({ symbol: this.symbol, side, entry: p.entry, stop: p.stop, target: p.target || null, risk: c.risk, qty: c.qty, orderId: r.orderId || null });
       this.app.ui.toast(`Order gesendet (${this.env === 'live' ? 'Live' : 'Demo'}): ${c.long ? 'Long' : 'Short'} ${params.qty} · ID ${String(r.orderId || '').slice(0, 8)}`, 'info', 5000);
     });
   }
@@ -434,7 +435,7 @@ export class Trader {
         <div class="tr-btns"><button class="tb" data-act="clear">Leeren</button><label class="mini"><input type="checkbox" data-cfg="keepLines" ${c.keepLines ? 'checked' : ''}> Linien auch bei geschlossenem Panel</label></div>
         <button class="tb primary tr-send ${calc ? (calc.long ? 'long' : 'short') : ''}" data-act="send" ${calc && !this.busy ? '' : 'disabled'}>${this.busy ? 'sendet …' : calc ? `${calc.long ? 'Long' : 'Short'} prüfen und senden …` : 'Order prüfen …'}</button>
       </div>
-      <div class="tr-sec tr-foot"><button class="tb sm" data-act="key">Schlüssel ${live ? 'Live' : 'Demo'} ändern</button><button class="tb sm" data-act="refresh">Aktualisieren</button></div>`;
+      <div class="tr-sec tr-foot"><button class="tb sm" data-act="journal">Journal</button><button class="tb sm" data-act="key">Schlüssel ${live ? 'Live' : 'Demo'} ändern</button><button class="tb sm" data-act="refresh">Aktualisieren</button></div>`;
     bindEnv();
     body.querySelectorAll('[data-type]').forEach(b => b.onclick = () => { c.type = b.dataset.type; this.save(); this.render(true); this.redraw(); });
     body.querySelectorAll('[data-plan]').forEach(inp => inp.onchange = () => { const v = parseFloat(String(inp.value).replace(',', '.')); this.plan[inp.dataset.plan] = v > 0 ? v : null; this.render(true); this.redraw(); });
@@ -456,6 +457,7 @@ export class Trader {
       if (act === 'be') this.breakEven();
       if (act === 'cancelAll') this.cancelAll();
       if (act === 'refresh') this.refresh();
+      if (act === 'journal') { if (this.app.ui.mobile && this._sheetClose) this._sheetClose(); this.app.journal?.open(); }
       if (act === 'clear') { this.plan = { entry: null, stop: null, target: null }; this.render(true); this.redraw(); }
       if (act === 'key') { body.innerHTML = envRow + this.keyForm(true); this.bindKeyForm(body); bindEnv(); }
     });

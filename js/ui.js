@@ -1,11 +1,14 @@
 // Oberfläche: Toolbar, Zeichenleiste, Legende, Z-Tabelle, Panels rechts (Watchlist, Trades, Orderbuch),
 // Dialoge (Symbol, Indikatoren, Einstellungen), Handy-Leiste.
 import { ICON, TOOL_ICON, CHART_TYPES, coinBadge } from './icons.js';
-import { TOOLS, COLORS, LINE_TYPES, STYLE_KEYS } from './render/drawings.js';
+import { TOOLS, COLORS, LINE_TYPES, STYLE_KEYS, TOOL_GROUPS, TOOL_KEYS } from './render/drawings.js';
 import { TYPES, REGISTRY, CATEGORIES } from './indicators.js';
 import { MARKETS } from './exchanges.js';
 import { APP, COINS, COIN_NAME, TEMPLATES, CANDLE_STYLES } from './config.js';
 import { ALERT_CONDS } from './alerts.js';
+import { LA_GROUPS, LA_DEFAULT, DISCORD_RE, TG_TOKEN_RE } from './levelalerts.js';
+import { LAYOUTS, layIcon } from './multi.js';
+import { TOKEN_RE } from './sync.js';
 import { TIMEFRAMES, fmtPrice, fmtPct, fmtCompact, fmtTime, fmtDateTime, tzOffsetLabel, escapeHtml as esc, nf, deepClone, mergeDefaults, niceStep, periodStart, cssColor, splitColor, joinColor, mixHex, SESSION_MODES } from './util.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -41,12 +44,22 @@ export class UI {
     $('#indBtn').onclick = () => this.openIndicatorDialog();
     $('#tpoBtn').onclick = () => this.app.toggleTpo();
     $('#tplBtn').onclick = (e) => this.openTemplatePop(e.currentTarget);
+    $('#layerBtn').innerHTML = `${ICON.layers}<span>Ebenen</span>`;
+    $('#layerBtn').onclick = (e) => this.openLayers(e.currentTarget);
     $('#themeBtn').onclick = () => a.setTheme(a.state.theme === 'dark' ? 'light' : 'dark');
     $('#setBtn').onclick = () => this.openSettings();
     $('#shotBtn').onclick = () => a.screenshot();
     $('#fullBtn').onclick = () => this.toggleFullscreen();
     $('#installBtn').innerHTML = `${ICON.install}<span>App installieren</span>`;
     $('#installBtn').onclick = () => this.installApp();
+    $('#layoutBtn').innerHTML = layIcon('4');
+    $('#layoutBtn').onclick = (e) => {
+      const box = el(`<div class="menu">${LAYOUTS.map(([k, l]) => `<div class="mi act" data-lay="${k}">${layIcon(k)}<span>${l}</span></div>`).join('')}<div class="msep"></div><div class="mi muted"><span>Jede Zelle hat eigene Zeiteinheit und Indikatoren. Fadenkreuz gekoppelt.</span></div></div>`);
+      box.onclick = (ev) => { const it = ev.target.closest('[data-lay]'); if (it) location.href = '?multi=' + it.dataset.lay; };
+      this.pop(e.currentTarget, box);
+    };
+    $('#replayBtn').innerHTML = `${ICON.replay}<span>Replay</span>`;
+    $('#replayBtn').onclick = () => this.app.replay.toggle();
     $('#traderBtn').innerHTML = `${ICON.trade}<span>Trader</span>`;
     $('#traderBtn').onclick = () => this.app.trader?.toggle();
     this.renderInstall();
@@ -99,6 +112,7 @@ export class UI {
     $('#tpoBtn').classList.toggle('on', a.tpoOverlayOn);
     $('#typeBtn').title = 'Charttyp: ' + (CHART_TYPES.find(x => x[0] === st.chartType)?.[1] || '');
     $('#themeBtn').innerHTML = st.theme === 'dark' ? ICON.sun : ICON.moon;
+    $('#layerBtn')?.classList.toggle('on', !!a.focus);
     $('#themeBtn').title = st.theme === 'dark' ? 'Helles Design (wie TradingView-Bild)' : 'Dunkles Design';
   }
   /** „App installieren“ zeigen, wenn der Browser es anbietet (nicht in der installierten App selbst). */
@@ -126,7 +140,8 @@ export class UI {
   }
   setStatus(st) {
     const map = { live: ['Live', 'ok'], connecting: ['verbindet …', 'warn'], reconnecting: ['neu verbinden …', 'warn'], off: ['offline', 'off'] };
-    const [txt, cls] = map[st] || map.off;
+    this._lastStatus = st;
+    const [txt, cls] = this.app.replay?.on ? ['Replay', 'warn'] : map[st] || map.off;
     for (const id of ['#status', '#mstatus']) { const e = $(id); if (e) { e.className = 'status ' + cls; e.querySelector('span').textContent = txt; } }
   }
   setLoading(on, text = '') {
@@ -157,43 +172,83 @@ export class UI {
   renderTools() {
     const a = this.app, st = a.state;
     const tool = a.drawings?.tool || 'cursor';
-    const groups = [['cursor'], ['trend', 'ray', 'hline', 'hray', 'vline'], ['avwap', 'fvp', 'ftpo', 'rect', 'fib', 'measure', 'text'], ['long', 'short'], ['alert']];
-    let html = groups.map(g => g.map(t => `<button class="tool ${t === tool ? 'on' : ''}" data-tool="${t}" title="${TOOLS.find(x => x[0] === t)[1]}">${ICON[TOOL_ICON[t]]}</button>`).join('')).join('<div class="tsep"></div>');
+    // Gruppen wie bei TradingView: der Knopf zeigt das zuletzt gewählte Werkzeug der Gruppe, der Pfeil rechts öffnet die Gruppe
+    const NAME = Object.fromEntries(TOOLS);
+    const pick = st.toolPick || {};
+    const cell = (g, gi) => {
+      const t = g.includes(tool) ? tool : (g.includes(pick[gi]) ? pick[gi] : g[0]);
+      const tip = NAME[t] + (TOOL_KEYS[t] ? ` (${TOOL_KEYS[t]})` : '');
+      return `<div class="tg"><button class="tool ${g.includes(tool) ? 'on' : ''}" data-tool="${t}" title="${esc(tip)}">${ICON[TOOL_ICON[t]]}</button>${g.length > 1 ? `<button class="tg-more" data-grp="${gi}" title="Weitere: ${esc(g.map(x => NAME[x]).join(', '))}">${ICON.chevR}</button>` : ''}</div>`;
+    };
+    let html = TOOL_GROUPS.map(cell).join('');
     html += '<div class="tsep"></div>';
     html += `<button class="tool ${st.magnet ? 'on' : ''}" data-tt="magnet" title="Magnet (an Kerzen einrasten)">${ICON.magnet}</button>`;
     html += `<button class="tool ${st.drawLock ? 'on' : ''}" data-tt="drawLock" title="Zeichnungen sperren">${st.drawLock ? ICON.lock : ICON.unlock}</button>`;
     html += `<button class="tool ${st.drawHide ? 'on' : ''}" data-tt="drawHide" title="Zeichnungen ausblenden">${st.drawHide ? ICON.eyeOff : ICON.eye}</button>`;
     html += `<button class="tool" data-tt="clear" title="Alle Zeichnungen löschen">${ICON.trash}</button>`;
+    html += '<div class="tsep"></div>';
+    html += `<button class="tool" data-tt="undo" title="Rückgängig (Strg+Z)">${ICON.undo}</button><button class="tool" data-tt="redo" title="Wiederholen (Strg+Y)">${ICON.redo}</button>`;
+    html += `<button class="tool" data-tt="tree" title="Objektbaum: alle Indikatoren und Zeichnungen">${ICON.tree}</button>`;
     const box = $('#tools');
     box.innerHTML = `<div class="tools-in">${html}</div>`;
     $$('[data-tool]', box).forEach(b => b.onclick = () => a.drawings.setTool(b.dataset.tool));
+    $$('[data-grp]', box).forEach(b => b.onclick = (e) => { e.stopPropagation(); this.openToolGroup(+b.dataset.grp, b); });
     $$('[data-tt]', box).forEach(b => b.onclick = () => {
       const k = b.dataset.tt;
       if (k === 'clear') { if (a.drawings.items.length && confirm('Alle Zeichnungen für ' + a.state.base + ' löschen?')) a.drawings.clearAll(); return; }
+      if (k === 'undo' || k === 'redo') { a.undo(k === 'redo'); return; }
+      if (k === 'tree') { this.openObjects(); return; }
       a.setState({ [k]: !st[k] }, { render: false });
       this.renderTools();
       a.drawings._changed(false);
     });
   }
+  /** Gruppe der Werkzeugleiste aufklappen (wie TradingView). */
+  openToolGroup(gi, anchor) {
+    const a = this.app, g = TOOL_GROUPS[gi];
+    if (!g) return;
+    const NAME = Object.fromEntries(TOOLS);
+    const box = el(`<div class="menu toolgrp">${g.map(t => `<div class="mi act ${t === a.drawings.tool ? 'on' : ''}" data-t="${t}">${ICON[TOOL_ICON[t]]}<span>${esc(NAME[t])}</span>${TOOL_KEYS[t] ? `<small class="muted">${TOOL_KEYS[t]}</small>` : ''}</div>`).join('')}</div>`);
+    let close = null;
+    box.onclick = (e) => {
+      const it = e.target.closest('[data-t]');
+      if (!it) return;
+      this.closePop(); close?.();
+      this.pickTool(it.dataset.t);
+    };
+    close = this.pop(anchor, box, { side: 'right', title: 'Werkzeuge' });
+  }
+  /** Werkzeug wählen und als sichtbares Werkzeug seiner Gruppe merken. */
+  pickTool(t) {
+    const a = this.app, st = a.state;
+    const gi = TOOL_GROUPS.findIndex(g => g.includes(t));
+    if (gi >= 0 && TOOL_GROUPS[gi].length > 1) { st.toolPick = { ...(st.toolPick || {}), [gi]: t }; a._save(); }
+    a.drawings.setTool(t);
+    this.renderTools();
+  }
   onTool(t) {
     this.drawLayer.classList.toggle('on', t !== 'cursor');
     $$('#tools [data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
-    if (this.mobile && t !== 'cursor') this.toast(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap'].includes(t) ? 'Tippe auf den Chart' : t === 'alert' ? 'Tippe auf den Preis für den Alarm' : 'Tippe Startpunkt, dann Endpunkt', 'info', 1800);
+    if (t !== 'cursor' && !$(`#tools [data-tool="${t}"]`)) this.renderTools();
+    if (t === 'channel') this.toast(this.mobile ? 'Tippe Start und Ende der Linie, dann die Breite des Kanals' : 'Klick: Start, Ende der Linie, dann Breite des Kanals', 'info', 2600);
+    else if (t === 'note') this.toast(this.mobile ? 'Tippe auf die Stelle, dann wohin die Notiz soll' : 'Klick auf die Stelle, dann wohin die Notiz soll', 'info', 2200);
+    else if (this.mobile && t !== 'cursor') this.toast(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap'].includes(t) ? 'Tippe auf den Chart' : t === 'alert' ? 'Tippe auf den Preis für den Alarm' : 'Tippe Startpunkt, dann Endpunkt', 'info', 1800);
   }
   onDrawingSelect(sel) {
     const bar = $('#selbar');
     if (!sel) { bar.classList.remove('on'); bar.innerHTML = ''; return; }
-    const isPos = sel.type === 'long' || sel.type === 'short';
+    const isPos = sel.type === 'long' || sel.type === 'short' || ['measure', 'prange', 'drange'].includes(sel.type);
+    const ck = sel.type === 'note' ? 'bg' : 'color';
     if (sel.type === 'alert' || sel.type === 'ftpo') { this._selbarSpecial(bar, sel); return; }
-    bar.innerHTML = (isPos ? '' : COLORS.map(c => `<button class="sw ${sel.color === c ? 'on' : ''}" data-c="${c}" style="--c:${c}"></button>`).join('') + '<span class="vsep"></span>' +
-      [1, 2, 3].map(w => `<button class="wbtn ${sel.width === w ? 'on' : ''}" data-w="${w}"><i style="height:${w}px"></i></button>`).join('')) +
+    bar.innerHTML = (isPos ? '' : COLORS.map(c => `<button class="sw ${sel[ck] === c ? 'on' : ''}" data-c="${c}" style="--c:${c}"></button>`).join('') + (sel.type === 'note' || sel.type === 'text' ? '' : '<span class="vsep"></span>' +
+      [1, 2, 3].map(w => `<button class="wbtn ${sel.width === w ? 'on' : ''}" data-w="${w}"><i style="height:${w}px"></i></button>`).join(''))) +
       (sel.type === 'fib' ? `<button class="tb ${sel.ext ? 'on' : ''}" data-ext="1" title="nach rechts verlängern">→</button>` : '') +
       (sel.type === 'avwap' ? `<span class="vsep"></span><button class="tb" data-bands="1" title="Bänder: aus / ±1σ / ±1σ ±2σ / ±1σ ±2σ ±3σ">σ ${['aus', '1', '1 2', '1 2 3'][sel.bands || 0]}</button><button class="tb" data-src="1" title="Quelle">${(sel.src || 'hlc3').toUpperCase()}</button>` : '') +
       `<span class="vsep"></span><button class="tb icon" data-set="1" title="Einstellungen (auch Rechtsklick / Doppelklick)">${ICON.gear}</button><button class="tb icon" data-del="1" title="Löschen">${ICON.trash}</button>`;
     bar.classList.add('on');
     const d = this.app.drawings;
     $('[data-set]', bar).onclick = () => this.openDrawingSettings(sel);
-    $$('[data-c]', bar).forEach(b => b.onclick = () => { sel.color = b.dataset.c; d._changed(); });
+    $$('[data-c]', bar).forEach(b => b.onclick = () => { sel[ck] = b.dataset.c; if (ck === 'bg') sel.color = ['#ffffff', '#f0a93b'].includes(b.dataset.c) ? '#131722' : '#ffffff'; d._changed(); this.onDrawingSelect(sel); });
     $$('[data-w]', bar).forEach(b => b.onclick = () => { sel.width = +b.dataset.w; d._changed(); });
     $('[data-ext]', bar)?.addEventListener('click', () => { sel.ext = !sel.ext; d._changed(); });
     $('[data-bands]', bar)?.addEventListener('click', () => { sel.bands = ((sel.bands || 0) + 1) % 4; d._changed(); });
@@ -250,6 +305,92 @@ export class UI {
     window.addEventListener('resize', off, { once: true });
     window.addEventListener('keydown', esc1);
   }
+  // ================================================================ Ebenen und Objektbaum
+  /** Ebenen-Menü: Gruppen von Indikatoren mit einem Tipp ein/aus, Fokus, Zeichnungen, Objektbaum. */
+  openLayers(anchor) {
+    const a = this.app, st = a.state;
+    const box = el(`<div class="menu wide layers"></div>`);
+    const draw = () => {
+      const rows = LAYERS.map(([k, name, types]) => {
+        const inds = st.indicators.filter(i => types.includes(i.type));
+        const on = inds.some(i => i.visible);
+        return inds.length ? `<div class="mi lay" data-layer="${k}"><span>${name}</span><small class="muted">${inds.length}</small><i class="sw-t ${on ? 'on' : ''}"></i></div>` : '';
+      }).join('');
+      box.innerHTML = `${rows}
+        <div class="mi lay" data-layer="draw"><span>Zeichnungen</span><small class="muted">${a.drawings.items.length}</small><i class="sw-t ${st.drawHide ? '' : 'on'}"></i></div>
+        <div class="msep"></div>
+        <div class="mi act" data-act="focus">${ICON.focus}<span>${a.focus ? 'Fokus beenden' : 'Fokus: nur Kerzen'} <small class="muted">Alt+K</small></span></div>
+        <div class="mi act" data-act="tree">${ICON.tree}<span>Objektbaum …</span></div>
+        <div class="mi act" data-act="range">${ICON.layers}<span>Level nur in Kursnähe: ${+st.display.levelRange > 0 ? '± ' + st.display.levelRange + ' %' : 'aus'}</span></div>`;
+    };
+    draw();
+    box.onclick = (e) => {
+      const l = e.target.closest('[data-layer]'), act = e.target.closest('[data-act]')?.dataset.act;
+      if (l) {
+        const k = l.dataset.layer;
+        if (k === 'draw') { a.setState({ drawHide: !st.drawHide }, { render: false }); this.renderTools(); a.drawings._changed(false); }
+        else {
+          const types = LAYERS.find(x => x[0] === k)[2];
+          const inds = st.indicators.filter(i => types.includes(i.type));
+          const on = !inds.some(i => i.visible);
+          for (const i of inds) i.visible = on;
+          a.afterIndicatorChange(true);
+        }
+        draw();
+        return;
+      }
+      if (act === 'focus') { this.closePop(); this.closeTopModal(); a.toggleFocus(); }
+      if (act === 'tree') { this.closePop(); this.closeTopModal(); this.openObjects(); }
+      if (act === 'range') {
+        const steps = [0, 2, 3, 5, 10];
+        const cur = +st.display.levelRange || 0;
+        st.display = { ...st.display, levelRange: steps[(steps.indexOf(cur) + 1) % steps.length] || 0 };
+        a._save(); a.recompute(true); draw();
+      }
+    };
+    if (this.mobile) { const close = this.modal('Ebenen', box); box.addEventListener('click', (e) => { if (e.target.closest('[data-act="focus"],[data-act="tree"]')) close(); }); }
+    else this.pop(anchor, box);
+  }
+  /** Objektbaum wie TradingView: alle Indikatoren und Zeichnungen – ein/aus, sperren, Einstellungen, löschen. */
+  openObjects() {
+    const a = this.app, st = a.state, d = a.drawings;
+    const NAME = Object.fromEntries(TOOLS);
+    const body = el(`<div class="setdlg objtree"></div>`);
+    const draw = () => {
+      const inds = st.indicators.map(i => `<div class="ot-row" data-uid="${i.uid}"><button class="tb icon sm" data-oi="vis" title="ein/aus">${i.visible ? ICON.eye : ICON.eyeOff}</button><span class="ot-n ${i.visible ? '' : 'off'}">${esc(TYPES[i.type]?.title?.(i.s, a.titleCtx()) || TYPES[i.type]?.name || i.type)}</span><button class="tb icon sm" data-oi="set" title="Einstellungen">${ICON.gear}</button><button class="tb icon sm" data-oi="del" title="Entfernen">${ICON.trash}</button></div>`).join('');
+      const items = d.items.map((it, k) => `<div class="ot-row" data-k="${k}"><button class="tb icon sm" data-od="vis" title="ein/aus">${it.hidden ? ICON.eyeOff : ICON.eye}</button><button class="tb icon sm" data-od="lock" title="sperren">${it.locked ? ICON.lock : ICON.unlock}</button><span class="ot-n ${it.hidden ? 'off' : ''}"><i class="ot-c" style="background:${cssColor((it.type === 'note' ? it.bg : it.color) || '#787b86')}"></i>${esc(NAME[it.type] || it.type)} <small class="muted">${it.type === 'text' || it.type === 'note' ? esc(it.text || '') : it.type === 'vline' ? '' : a.fmt(it.pts[0].p)}${it.label ? ' · ' + esc(it.label) : ''}${it.vis ? ' · nur manche Zeiteinheiten' : ''}</small></span><button class="tb icon sm" data-od="set" title="Einstellungen">${ICON.gear}</button><button class="tb icon sm" data-od="del" title="Löschen">${ICON.trash}</button></div>`).join('');
+      body.innerHTML = `<div class="f-sec">Indikatoren (${st.indicators.length})</div>${inds || '<div class="muted pad">keine</div>'}
+        <div class="f-sec">Zeichnungen ${esc(st.base)} (${d.items.length})</div>${items || '<div class="muted pad">keine</div>'}
+        <div class="dlg-foot"><button class="tb" data-all="show">alle zeigen</button><button class="tb" data-all="hide">alle ausblenden</button><button class="tb danger" data-all="del">alle Zeichnungen löschen</button><div class="grow"></div><button class="tb primary" data-all="ok">Fertig</button></div>`;
+    };
+    draw();
+    const close = this.modal('Objektbaum', body, { wide: true });
+    body.onclick = (e) => {
+      const b = e.target.closest('[data-oi],[data-od],[data-all]');
+      if (!b) return;
+      const row = b.closest('.ot-row');
+      if (b.dataset.oi) {
+        const uid = row.dataset.uid;
+        if (b.dataset.oi === 'vis') a.toggleIndicator(uid);
+        if (b.dataset.oi === 'set') { close(); this.openIndicatorSettings(uid); return; }
+        if (b.dataset.oi === 'del') a.removeIndicator(uid);
+      } else if (b.dataset.od) {
+        const it = d.items[+row.dataset.k];
+        if (!it) return;
+        if (b.dataset.od === 'vis') { it.hidden = !it.hidden; d._changed(); }
+        if (b.dataset.od === 'lock') { it.locked = !it.locked; d._changed(); }
+        if (b.dataset.od === 'set') { close(); this.openDrawingSettings(it); return; }
+        if (b.dataset.od === 'del') d.remove(it);
+      } else {
+        const v = b.dataset.all;
+        if (v === 'ok') { close(); return; }
+        if (v === 'show' || v === 'hide') { for (const it of d.items) it.hidden = v === 'hide'; d._changed(); }
+        if (v === 'del' && d.items.length && confirm(`Alle ${d.items.length} Zeichnungen auf ${st.base} löschen?`)) d.clearAll();
+      }
+      draw();
+    };
+  }
+
   /** Rechtsklick auf eine Zeichnung. */
   openDrawingMenu(it, x, y) {
     const d = this.app.drawings;
@@ -272,6 +413,8 @@ export class UI {
       { label: 'Einstellungen (Session, TPO, Zeitzone) …', icon: 'gear', act: () => this.openSettings() },
       { label: 'Indikatoren …', icon: 'fx', hint: '/', act: () => this.openIndicatorDialog() },
       { label: 'Vorlagen …', icon: 'grid', act: () => this.openTemplateSheet() },
+      { label: 'Objektbaum …', icon: 'tree', act: () => this.openObjects() },
+      { label: 'Journal …', icon: 'trade', act: () => a.journal?.open() },
     ];
     if (p) {
       items.push('sep',
@@ -287,6 +430,8 @@ export class UI {
       items.push({ label: `Preis kopieren (${ps})`, icon: 'copy', act: () => { navigator.clipboard?.writeText(String(+p.toFixed(a.priceDec))).then(() => this.toast('Preis kopiert', 'info', 1500)).catch(() => {}); } });
     }
     items.push('sep',
+      { label: 'Rückgängig', icon: 'undo', hint: 'Strg+Z', act: () => a.undo() },
+      { label: a.focus ? 'Fokus beenden' : 'Fokus: nur Kerzen', icon: 'focus', hint: 'Alt+K', act: () => a.toggleFocus() },
       { label: 'Ansicht zurücksetzen', icon: 'reset', act: () => { a.chart.priceScale('right').setAutoScale(true); a.chart.timeScale().scrollToRealTime(); } },
       { label: st.drawHide ? 'Zeichnungen einblenden' : 'Zeichnungen ausblenden', icon: st.drawHide ? 'eye' : 'eyeOff', act: () => { a.setState({ drawHide: !st.drawHide }, { render: false }); this.renderTools(); d._changed(false); } });
     if (d.items.length) items.push({ label: `Alle Zeichnungen löschen (${d.items.length}) …`, icon: 'trash', danger: true, act: () => { if (confirm(`Alle ${d.items.length} Zeichnungen auf ${st.base} löschen?`)) d.clearAll(); } });
@@ -298,18 +443,19 @@ export class UI {
   openDrawingSettings(it) {
     const a = this.app, d = a.drawings, ty = it.type, st = a.state;
     const NAME = Object.fromEntries(TOOLS);
-    const isLine = LINE_TYPES.has(ty), isPos = ty === 'long' || ty === 'short';
+    const isLine = LINE_TYPES.has(ty), isPos = ty === 'long' || ty === 'short', isRange = ['measure', 'prange', 'drange'].includes(ty);
     const one = ['hline', 'hray', 'vline', 'text', 'avwap', 'alert'].includes(ty);
     const keys = STYLE_KEYS[ty] || [];
     const FACTORY = {
-      color: ty === 'hline' || ty === 'hray' ? '#7c3aed' : ty === 'alert' || ty === 'ftpo' ? '#131722' : ty === 'text' ? (a.theme.dark ? '#e8e6e1' : '#131722') : '#2962ff',
-      width: ty === 'alert' || ty === 'ftpo' ? 1 : 2, dash: 'solid', ext: false, extL: false, axis: true, bgOn: ty !== 'text', bg: null,
+      color: ty === 'hline' || ty === 'hray' ? '#7c3aed' : ty === 'alert' || ty === 'ftpo' ? '#131722' : ty === 'text' ? (a.theme.dark ? '#e8e6e1' : '#131722') : ty === 'note' ? '#ffffff' : '#2962ff',
+      width: ty === 'alert' || ty === 'ftpo' ? 1 : 2, dash: 'solid', ext: false, extL: false, axis: true, bgOn: ty !== 'text', bg: ty === 'note' ? '#2962ff' : null, mid: true,
       fs: 13, bdOn: false, bd: '#787b86', src: 'hlc3', bands: 1, cond: 'cross', mode: ty === 'ftpo' ? 'letters' : 'volume', block: '30m', vaPct: 68, clip: false, rows: 0, wf: 0.4,
     };
     const hexOf = (c) => splitColor(c || '#2962ff').hex;
     const read = () => ({
       color: it.color || FACTORY.color, width: it.width || 1, dash: it.dash || 'solid', label: it.label || '',
-      bgOn: ty === 'text' ? !!it.bgOn : it.bgOn !== false, bg: it.bg || (ty === 'text' ? (a.theme.dark ? '#2a2e39' : '#f0f3fa') : joinColor(hexOf(it.color), it.fillA ?? 0.14)),
+      bgOn: ty === 'text' ? !!it.bgOn : it.bgOn !== false, bg: it.bg || (ty === 'text' ? (a.theme.dark ? '#2a2e39' : '#f0f3fa') : ty === 'note' ? '#2962ff' : joinColor(hexOf(it.color), ty === 'channel' ? 0.12 : it.fillA ?? 0.14)),
+      mid: it.mid !== false, vMin: it.vis?.min !== false, vHour: it.vis?.hour !== false, vDay: it.vis?.day !== false, vWeek: it.vis?.week !== false,
       ext: !!it.ext, extL: !!it.extL, axis: it.axis !== false, text: it.text || '', fs: it.fs || 13, bdOn: !!it.bdOn, bd: it.bd || '#787b86', locked: !!it.locked,
       src: it.src || 'hlc3', bands: it.bands ?? 1, cond: it.cond || 'cross', note: it.note || '',
       mode: it.mode || FACTORY.mode, block: it.block || '30m', vaPct: it.vaPct || 68, clip: !!it.clip, rows: it.rows || 0, wf: it.wf || 0.4,
@@ -319,41 +465,47 @@ export class UI {
     const step = Math.pow(10, -a.priceDec);
     const schema = [];
     // außen: Linie bzw. Rand
-    if (!isPos && ty !== 'measure') {
-      schema.push({ sec: ty === 'rect' ? 'Außen (Rand)' : ty === 'text' ? 'Text' : 'Linie' });
-      schema.push({ k: 'color', label: ty === 'rect' ? 'Farbe Rand' : 'Farbe', t: 'color' });
+    if (!isPos && !isRange) {
+      schema.push({ sec: ty === 'rect' || ty === 'channel' ? 'Außen (Rand)' : ty === 'text' || ty === 'note' ? 'Text' : 'Linie' });
+      schema.push({ k: 'color', label: ty === 'rect' || ty === 'channel' ? 'Farbe Linien' : ty === 'note' ? 'Textfarbe' : 'Farbe', t: 'color' });
       if (isLine || ['avwap', 'alert'].includes(ty)) schema.push({ k: 'width', label: ty === 'rect' ? 'Randbreite' : 'Linienbreite', t: 'width' });
       if (isLine) schema.push({ k: 'dash', label: 'Linienart', t: 'select', opts: [['solid', 'durchgezogen'], ['dashed', 'gestrichelt'], ['dotted', 'gepunktet']] });
     }
-    if (ty === 'text') schema.push({ k: 'text', label: 'Text', t: 'text' }, { k: 'fs', label: 'Schriftgröße', t: 'int', min: 8, max: 48 });
+    if (ty === 'text' || ty === 'note') schema.push({ k: 'text', label: ty === 'note' ? 'Text („ | “ = neue Zeile)' : 'Text', t: 'text' }, { k: 'fs', label: 'Schriftgröße', t: 'int', min: 8, max: 48 });
     // innen: Hintergrund
-    if (ty === 'rect' || ty === 'text') {
-      schema.push({ sec: ty === 'rect' ? 'Innen (Hintergrund)' : 'Hintergrund und Rahmen' });
+    if (ty === 'rect' || ty === 'text' || ty === 'channel') {
+      schema.push({ sec: ty === 'text' ? 'Hintergrund und Rahmen' : 'Innen (Hintergrund)' });
       schema.push({ k: 'bgOn', label: 'Hintergrund', t: 'bool', color: 'bg' });
       if (ty === 'text') schema.push({ k: 'bdOn', label: 'Rahmen', t: 'bool', color: 'bd' });
     }
+    if (ty === 'note') schema.push({ sec: 'Sprechblase' }, { k: 'bg', label: 'Hintergrund', t: 'color' }, { k: 'bdOn', label: 'Rahmen', t: 'bool', color: 'bd' });
     if (ty === 'trend' || ty === 'fib' || ty === 'ray' || ty === 'hline' || ty === 'hray' || isLine) schema.push({ sec: 'Weitere' });
-    if (ty === 'trend' || ty === 'fib') schema.push({ k: 'ext', label: 'nach rechts verlängern', t: 'bool' });
-    if (ty === 'trend' || ty === 'ray') schema.push({ k: 'extL', label: 'nach links verlängern', t: 'bool' });
+    if (ty === 'channel') schema.push({ k: 'mid', label: 'Mittellinie (gestrichelt)', t: 'bool' });
+    if (ty === 'trend' || ty === 'fib' || ty === 'channel') schema.push({ k: 'ext', label: 'nach rechts verlängern', t: 'bool' });
+    if (ty === 'trend' || ty === 'ray' || ty === 'channel') schema.push({ k: 'extL', label: 'nach links verlängern', t: 'bool' });
     if (ty === 'hline' || ty === 'hray') schema.push({ k: 'axis', label: 'Preis auf der Skala zeigen', t: 'bool' });
     if (isLine) schema.push({ k: 'label', label: 'Beschriftung', t: 'text' });
     if (ty === 'avwap') schema.push({ sec: 'Anchored VWAP' }, { k: 'src', label: 'Quelle', t: 'select', opts: [['hlc3', 'HLC3'], ['ohlc4', 'OHLC4'], ['close', 'Close']] }, { k: 'bands', label: 'Bänder', t: 'select', opts: [[0, 'aus'], [1, '±1σ'], [2, '±1σ ±2σ'], [3, '±1σ ±2σ ±3σ']] });
     if (ty === 'alert') schema.push({ sec: 'Alarm' }, { k: 'cond', label: 'Bedingung', t: 'select', opts: ALERT_CONDS.map(c => [c[0], c[1]]) }, { k: 'note', label: 'Notiz', t: 'text' });
     if (ty === 'ftpo') schema.push({ sec: 'TPO' }, { k: 'mode', label: 'Darstellung', t: 'select', opts: [['letters', 'Buchstaben'], ['blocks', 'Blöcke']] }, { k: 'block', label: 'Zeit pro Buchstabe', t: 'select', opts: [['5m', '5 Min.'], ['15m', '15 Min.'], ['30m', '30 Min.'], ['1h', '1 Std.']] }, { k: 'vaPct', label: 'Value Area %', t: 'select', opts: [[68, '68 %'], [70, '70 %'], [80, '80 %']] }, { k: 'clip', label: 'Nur im gezogenen Preisbereich zählen', t: 'bool' });
     if (ty === 'fvp') schema.push({ sec: 'Volume Profile' }, { k: 'mode', label: 'Anzeige', t: 'select', opts: [['volume', 'Volumen'], ['bidask', 'Kauf / Verkauf'], ['delta', 'Delta']] }, { k: 'rows', label: 'Zeilenhöhe (0 = automatisch)', t: 'num', min: 0, max: 1e6, step }, { k: 'wf', label: 'Breite des Profils', t: 'num', min: 0.1, max: 1, step: 0.05 });
-    if (ty !== 'measure') {
+    if (!isRange) {
       schema.push({ sec: 'Koordinaten' });
       if (isPos) schema.push({ k: 'p0', label: 'Entry', t: 'num', step, min: 0 }, { k: 'stop', label: 'Stop', t: 'num', step, min: 0 }, { k: 'target', label: 'Ziel', t: 'num', step, min: 0 });
       else if (ty !== 'vline') schema.push({ k: 'p0', label: one ? 'Preis' : 'Preis 1', t: 'num', step, min: 0 });
-      if (!one && !isPos) schema.push({ k: 'p1', label: 'Preis 2', t: 'num', step, min: 0 });
+      if (!one && !isPos) schema.push({ k: 'p1', label: ty === 'note' ? 'Preis Notiz' : 'Preis 2', t: 'num', step, min: 0 });
     }
+    // Sichtbarkeit je Zeiteinheit wie bei TradingView
+    schema.push({ sec: 'Sichtbarkeit (Zeiteinheiten)' }, { k: 'vMin', label: 'Minuten', t: 'bool' }, { k: 'vHour', label: 'Stunden', t: 'bool' }, { k: 'vDay', label: 'Tage', t: 'bool' }, { k: 'vWeek', label: 'Wochen und Monate', t: 'bool' });
     schema.push({ sec: 'Sonstiges' }, { k: 'locked', label: 'Sperren (nicht verschiebbar)', t: 'bool' });
     const body = el(`<div class="setdlg"><div class="form" id="dsForm">${formHtml(schema, cur)}</div>
       <div class="dlg-foot">${keys.length ? `<div class="dd-wrap"><button class="tb" id="dsTpl">Vorlage ${ICON.chev}</button></div>` : ''}<button class="tb icon danger" id="dsDel" title="Löschen">${ICON.trash}</button><button class="tb icon" id="dsClone" title="Klonen">${ICON.copy}</button><div class="grow"></div><button class="tb primary" id="dsOk">Ok</button></div></div>`);
     const close = this.modal(NAME[ty] || 'Zeichnung', body);
     const has = (k) => schema.some(f => f.k === k || f.color === k);
     const apply = () => {
-      for (const k of ['color', 'width', 'dash', 'ext', 'extL', 'axis', 'fs', 'locked', 'src', 'cond', 'mode', 'block', 'clip', 'rows', 'wf', 'bgOn', 'bg', 'bdOn', 'bd']) if (has(k)) it[k] = cur[k];
+      for (const k of ['color', 'width', 'dash', 'ext', 'extL', 'axis', 'fs', 'locked', 'src', 'cond', 'mode', 'block', 'clip', 'rows', 'wf', 'bgOn', 'bg', 'bdOn', 'bd', 'mid']) if (has(k)) it[k] = cur[k];
+      const vis = { min: !!cur.vMin, hour: !!cur.vHour, day: !!cur.vDay, week: !!cur.vWeek };
+      if (Object.values(vis).every(Boolean)) delete it.vis; else it.vis = vis;
       if (has('bands')) it.bands = +cur.bands;
       if (has('vaPct')) it.vaPct = +cur.vaPct;
       if (has('label')) it.label = String(cur.label || '').trim();
@@ -414,6 +566,7 @@ export class UI {
     const perm = al.permission;
     const body = el(`<div class="setdlg"><div class="alert-list">${list.length ? list.map(it => `<div class="al-row ${it.fired ? 'fired' : ''}" data-id="${it.id}"><b>${esc(a.fmt(it.pts[0].p))}</b><span>${esc((ALERT_CONDS.find(c => c[0] === (it.cond || 'cross')) || ALERT_CONDS[0])[1])}${it.note ? ' · ' + esc(it.note) : ''}</span><span class="muted">${it.fired ? 'ausgelöst ' + esc(fmtDateTime(it.fired, a.tz)) : 'aktiv'}</span>${it.fired ? '<button class="tb" data-arm>aktivieren</button>' : ''}<button class="tb icon" data-del title="Löschen">${ICON.trash}</button></div>`).join('') : '<div class="muted pad">Noch keine Alarme. Werkzeug „Alarm“ (Glocke) wählen und auf den Preis tippen.</div>'}</div>
       <div class="info-box">Alarme werden geprüft, solange die Seite offen ist (Handy: im Vordergrund). Ton und Vibration bei Auslösung${perm === 'granted' ? ', System-Benachrichtigung ist erlaubt.' : perm === 'denied' ? '. System-Benachrichtigungen sind im Browser blockiert.' : '.'}</div>
+      <button class="row-btn" id="alLevels">${ICON.layers}<span>Level-Alarme und Handy-Push (Discord / Telegram)</span><b>${a.state.levelAlerts?.on ? 'an' : 'aus'}</b></button>
       <div class="dlg-foot">${perm === 'default' ? '<button class="tb" id="alPerm">Benachrichtigungen erlauben</button>' : ''}<button class="tb" id="alNew">${ICON.alert}<span>Alarm beim aktuellen Kurs</span></button><div class="grow"></div><button class="tb primary" id="alOk">Fertig</button></div></div>`);
     const close = this.modal('Alarme · ' + a.market.ticker(a.state.base), body);
     $$('.al-row', body).forEach(row => {
@@ -435,6 +588,105 @@ export class UI {
       close(); this.openAlerts();
     };
     $('#alOk', body).onclick = close;
+    $('#alLevels', body).onclick = () => { close(); this.openLevelAlerts(); };
+  }
+
+  /** Sync zwischen PC und Handy über ein privates GitHub Gist (Token trägt der Nutzer selbst ein). */
+  openSync() {
+    const a = this.app, sy = a.sync, c = sy.cfg;
+    const last = c.lastAt ? new Date(c.lastAt).toLocaleString('de-DE') : 'noch nie';
+    const body = el(`<div class="setdlg"><div class="form">
+      <div class="f-row"><label for="syTok">GitHub-Token (nur „gist“)</label><span class="f-ctl"><input id="syTok" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… oder github_pat_…" value="${esc(c.token || '')}"></span></div>
+      <div class="f-row f-chk"><label class="chk"><input type="checkbox" id="syAuto" ${c.auto ? 'checked' : ''}><i></i><span>Automatisch (nach Änderungen hochladen, beim Start neueren Stand holen)</span></label></div>
+      <div class="f-row"><label>Zuletzt abgeglichen</label><span class="f-ctl muted">${esc(last)}${c.gistId ? ' · Gist ' + esc(c.gistId.slice(0, 8)) + '…' : ''}</span></div>
+      <div class="info-box">Synchronisiert werden Einstellungen, Indikatoren, Vorlagen, Zeichnungen, Level-Alarme und Journal-Notizen – <b>nicht</b> die Bybit-Schlüssel, nicht Discord/Telegram und nicht der Token selbst.<br>
+      Token anlegen: github.com → Settings → Developer settings → Personal access tokens → <b>Tokens (classic)</b> → „Generate new token“ → nur den Haken <b>gist</b> setzen. Den Token trägst du auf PC und Handy selbst ein; er bleibt nur in diesem Browser. Gespeichert wird ein <b>privates</b> Gist „TQI Charts Sync“.</div>
+    </div>
+    <div class="dlg-foot stack"><button class="tb" id="syUp">Hochladen (dieses Gerät → Gist)</button><button class="tb" id="syDown">Herunterladen (Gist → dieses Gerät)</button><button class="tb" id="syDel">Token löschen</button><div class="grow"></div><button class="tb primary" id="syOk">Fertig</button></div></div>`);
+    const close = this.modal('Sync PC ↔ Handy', body, { wide: true });
+    const save = () => {
+      const tok = $('#syTok', body).value.trim();
+      if (tok && !TOKEN_RE.test(tok)) { this.toast('Das sieht nicht wie ein GitHub-Token aus (ghp_… oder github_pat_…)', 'error', 5000); return false; }
+      sy.cfg = { ...sy.cfg, token: tok, auto: $('#syAuto', body).checked };
+      return true;
+    };
+    $('#syTok', body).addEventListener('change', save);
+    $('#syAuto', body).addEventListener('change', save);
+    const run = async (btn, fn) => {
+      if (!save()) return;
+      if (!sy.ready) { this.toast('Erst den GitHub-Token eintragen', 'error'); return; }
+      btn.disabled = true;
+      try { await fn(); } catch (e) { this.toast('Sync: ' + (e.message || e), 'error', 6000); }
+      btn.disabled = false;
+    };
+    $('#syUp', body).onclick = (e) => run(e.currentTarget, async () => { const at = await sy.push(true); this.toast('Hochgeladen (' + new Date(at).toLocaleTimeString('de-DE') + ') – auf dem anderen Gerät „Herunterladen“', 'info', 5000); close(); this.openSync(); });
+    $('#syDown', body).onclick = (e) => run(e.currentTarget, async () => { if (confirm('Stand aus dem Gist übernehmen? Die Einstellungen und Zeichnungen auf diesem Gerät werden ersetzt.')) await sy.pull(); });
+    $('#syDel', body).onclick = () => { if (confirm('GitHub-Token aus diesem Browser löschen? (Das Gist bleibt bei GitHub.)')) { sy.cfg = { ...sy.cfg, token: '', auto: false }; $('#syTok', body).value = ''; $('#syAuto', body).checked = false; } };
+    $('#syOk', body).onclick = () => { if (save()) close(); };
+  }
+
+  /** Level-Alarme (Kurs berührt Level / läuft in Zone, neue Signale, Termine) und Push aufs Handy. */
+  openLevelAlerts() {
+    const a = this.app, la = a.lvAlerts;
+    const cur = { ...LA_DEFAULT, ...(a.state.levelAlerts || {}) };
+    cur.groups = { ...LA_DEFAULT.groups, ...(a.state.levelAlerts?.groups || {}) };
+    for (const [k] of LA_GROUPS) cur['g_' + k] = !!cur.groups[k];
+    const push = la.push;
+    const schema = [
+      { sec: 'Level-Alarme' },
+      { k: 'on', label: 'Level-Alarme einschalten', t: 'bool' },
+      { sec: 'Kurs berührt ein Level von …' },
+      ...LA_GROUPS.map(([k, n]) => ({ k: 'g_' + k, label: n, t: 'bool' })),
+      { k: 'zones', label: 'Kurs läuft in eine Zone (Tails, Single Prints, Absorption)', t: 'bool' },
+      { k: 'cooldown', label: 'Gleiches Level frühestens wieder nach (Min.)', t: 'int', min: 1, max: 1440 },
+      { sec: 'Signale und Termine' },
+      { k: 'absorption', label: 'Neue Absorption (Indikator „Absorption“)', t: 'bool' },
+      { k: 'bigtrades', label: 'Neuer Big Trade (Filter des Indikators)', t: 'bool' },
+      { k: 'hvb', label: 'High Volume Bar auch aufs Handy', t: 'bool' },
+      { k: 'events', label: 'Termine (CPI, FOMC, NFP …) vorher melden', t: 'bool' },
+      { k: 'eventsMin', label: 'Minuten vorher', t: 'int', min: 1, max: 240, offIf: ['events', false] },
+      { sec: 'Aufs Handy' },
+      { k: 'push', label: 'Alarme auch an Discord / Telegram schicken', t: 'bool' },
+    ];
+    const body = el(`<div class="setdlg"><div class="form"><div id="laForm">${formHtml(schema, cur)}</div>
+      <div class="push-form">
+        <div class="f-row"><label for="pDc">Discord Webhook-URL</label><span class="f-ctl"><input id="pDc" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…" value="${esc(push.discord || '')}"></span></div>
+        <div class="f-row"><label for="pTgT">Telegram Bot-Token</label><span class="f-ctl"><input id="pTgT" type="password" autocomplete="off" spellcheck="false" placeholder="123456:ABC…" value="${esc(push.tgToken || '')}"></span></div>
+        <div class="f-row"><label for="pTgC">Telegram Chat-ID</label><span class="f-ctl"><input id="pTgC" type="text" autocomplete="off" spellcheck="false" placeholder="z. B. 123456789" value="${esc(push.tgChat || '')}"><button class="tb sm" id="pTgGet" title="Chat-ID holen (vorher dem Bot /start schreiben)">holen</button></span></div>
+        <div class="info-box">Webhook und Bot-Token trägst du selbst ein. Sie bleiben nur in diesem Browser, gehen nur an Discord bzw. Telegram und landen nicht in Vorlagen, Links oder dem Sync. <b>Discord:</b> Kanal → Integrationen → Webhooks → „Neuer Webhook“ → URL kopieren. <b>Telegram:</b> bei @BotFather „/newbot“ → Token kopieren, deinem Bot „/start“ schreiben, dann „holen“. Alarme laufen, solange TQI Charts offen ist (PC reicht – die Meldung kommt aufs Handy).</div>
+      </div></div>
+      <div class="dlg-foot"><button class="tb" id="pTest">Test senden</button><button class="tb" id="pClear">Zugangsdaten löschen</button><div class="grow"></div><button class="tb primary" id="laOk">Fertig</button></div></div>`);
+    const close = this.modal('Level-Alarme', body, { wide: true });
+    const save = () => {
+      const o = { ...cur, groups: {} };
+      for (const [k] of LA_GROUPS) { o.groups[k] = !!cur['g_' + k]; delete o['g_' + k]; }
+      a.state.levelAlerts = o;
+      a._save();
+      if (o.on) a.alerts.askPermission();
+      a.recompute();
+    };
+    this.bindForm($('#laForm', body), cur, () => save());
+    const savePush = () => {
+      const dc = $('#pDc', body).value.trim(), tk = $('#pTgT', body).value.trim(), ch = $('#pTgC', body).value.trim();
+      if (dc && !DISCORD_RE.test(dc)) { this.toast('Discord: das sieht nicht wie eine Webhook-URL aus', 'error'); return false; }
+      if (tk && !TG_TOKEN_RE.test(tk)) { this.toast('Telegram: das sieht nicht wie ein Bot-Token aus', 'error'); return false; }
+      if (ch && !/^-?\d{3,}$|^@\w{4,}$/.test(ch)) { this.toast('Telegram: Chat-ID ist eine Zahl (oder @kanal)', 'error'); return false; }
+      la.push = { discord: dc, tgToken: tk, tgChat: ch };
+      return true;
+    };
+    for (const id of ['#pDc', '#pTgT', '#pTgC']) $(id, body).addEventListener('change', savePush);
+    $('#pTgGet', body).onclick = async () => {
+      try { const idv = await la.telegramChatId($('#pTgT', body).value.trim()); $('#pTgC', body).value = idv; savePush(); this.toast('Chat-ID gefunden: ' + idv, 'info'); }
+      catch (e) { this.toast('Telegram: ' + (e.message || e), 'error', 6000); }
+    };
+    $('#pTest', body).onclick = async () => {
+      if (!savePush()) return;
+      if (!la.pushReady) { this.toast('Erst Discord-Webhook oder Telegram-Token und Chat-ID eintragen', 'error'); return; }
+      const r = await la.send(`✅ TQI Charts: Test-Alarm (${a.market.ticker(a.state.base)} ${a.fmt(a.bars[a.bars.length - 1]?.c || 0)})`);
+      this.toast(r.failed ? 'Senden fehlgeschlagen – Internet oder Angaben prüfen' : 'Gesendet – kommt die Nachricht auf dem Handy an?', r.failed ? 'error' : 'info', 4000);
+    };
+    $('#pClear', body).onclick = () => { if (confirm('Webhook und Bot-Token aus diesem Browser löschen?')) { la.push = {}; for (const id of ['#pDc', '#pTgT', '#pTgC']) $(id, body).value = ''; } };
+    $('#laOk', body).onclick = () => { if (savePush()) close(); };
   }
 
   /** TPO-Chart: Leiste für das ausgewählte Profil (zusammenfügen / teilen wie MMT). */
@@ -511,7 +763,7 @@ export class UI {
     const a = this.app;
     const bars = a.bars;
     if (!bars.length) { $('#lgOhlc') && ($('#lgOhlc').innerHTML = ''); return; }
-    const i = a.crossIdx ?? bars.length - 1;
+    const i = a.crossIdx != null && a.crossIdx < bars.length ? a.crossIdx : bars.length - 1;
     $('#legend')?.classList.toggle('xhair', a.crossIdx != null);
     const b = bars[i], p = bars[i - 1];
     const ch = p ? b.c - p.c : b.c - b.o, chp = p ? ch / p.c * 100 : 0;
@@ -844,12 +1096,19 @@ export class UI {
       <div id="mPanel" class="mpanel"></div>
       <div class="sec-t">Mehr</div>
       <button class="row-btn" data-k="tpl">${ICON.grid}<span>Vorlagen</span></button>
+      <button class="row-btn" data-k="layers">${ICON.layers}<span>Ebenen ein/aus</span></button>
+      <button class="row-btn" data-k="tree">${ICON.tree}<span>Objektbaum</span><b>${st.indicators.length + a.drawings.items.length || ''}</b></button>
+      <button class="row-btn" data-k="focus">${ICON.focus}<span>${a.focus ? 'Fokus beenden' : 'Fokus: nur Kerzen'}</span></button>
+      <button class="row-btn" data-k="undo">${ICON.undo}<span>Rückgängig</span></button>
+      <button class="row-btn" data-k="replay">${ICON.replay}<span>${a.replay.on ? 'Bar Replay beenden' : 'Bar Replay'}</span></button>
       <button class="row-btn" data-k="alerts">${ICON.alert}<span>Alarme</span><b>${a.alerts.list().filter(x => !x.fired).length || ''}</b></button>
       <button class="row-btn" data-k="trader">${ICON.trade}<span>TQI Trader</span></button>
+      <button class="row-btn" data-k="journal">${ICON.tree}<span>Journal (Bybit-Trades)</span></button>
       <button class="row-btn" data-k="chartset">${ICON.candles}<span>Chart-Einstellungen (Farben, Kerzen)</span></button>
       ${this.isStandalone ? '' : `<button class="row-btn" data-k="install">${ICON.install}<span>Als App installieren</span></button>`}
       <button class="row-btn" data-k="theme">${st.theme === 'dark' ? ICON.sun : ICON.moon}<span>${st.theme === 'dark' ? 'Helles Design' : 'Dunkles Design'}</span></button>
       <button class="row-btn" data-k="shot">${ICON.camera}<span>Screenshot speichern</span></button>
+      <button class="row-btn" data-k="sync">${ICON.layers}<span>Sync PC ↔ Handy</span></button>
       <button class="row-btn" data-k="set">${ICON.gear}<span>Einstellungen</span></button>
     </div>`);
     const close = this.modal('Mehr', body, { onClose: () => { this._mWatch = false; this._mDom = false; this.reconnectDom(); } });
@@ -879,26 +1138,38 @@ export class UI {
       const k = b.dataset.k;
       close();
       if (k === 'tpl') this.openTemplateSheet();
+      if (k === 'layers') this.openLayers();
+      if (k === 'tree') this.openObjects();
+      if (k === 'focus') a.toggleFocus();
+      if (k === 'undo') a.undo();
+      if (k === 'replay') a.replay.toggle();
       if (k === 'alerts') this.openAlerts();
       if (k === 'trader') a.trader?.toggle(true);
+      if (k === 'journal') a.journal?.open();
       if (k === 'chartset') this.openChartSettings();
       if (k === 'install') this.installApp();
       if (k === 'theme') a.setTheme(st.theme === 'dark' ? 'light' : 'dark');
       if (k === 'shot') a.screenshot();
       if (k === 'set') this.openSettings();
+      if (k === 'sync') this.openSync();
     });
   }
 
   // ================================================================ Popover
-  pop(anchor, content) {
+  pop(anchor, content, { side = 'below', title = '' } = {}) {
     this.closePop();
-    if (this.mobile) return this.modal('', content);
+    if (this.mobile) return this.modal(title, content);
     const r = anchor.getBoundingClientRect();
     const p = el('<div class="pop"></div>');
     p.appendChild(content);
     $('#pop').appendChild(p);
-    p.style.top = (r.bottom + 4) + 'px';
-    p.style.left = Math.min(r.left, window.innerWidth - p.offsetWidth - 8) + 'px';
+    if (side === 'right') {
+      p.style.top = Math.max(4, Math.min(r.top - 4, window.innerHeight - p.offsetHeight - 8)) + 'px';
+      p.style.left = (r.right + 6) + 'px';
+    } else {
+      p.style.top = (r.bottom + 4) + 'px';
+      p.style.left = Math.min(r.left, window.innerWidth - p.offsetWidth - 8) + 'px';
+    }
     return () => this.closePop();
   }
   closePop() { $('#pop').innerHTML = ''; }
@@ -1353,6 +1624,9 @@ export class UI {
       { k: 'd.labelOffset', label: 'Abstand rechts (Kerzen)', t: 'int', min: 0, max: 100 },
       { k: 'd.labelNoOverlap', label: 'Beschriftungen nicht überlappen', t: 'bool' },
       { k: 'd.labelBg', label: 'Beschriftung mit Hintergrund', t: 'bool' },
+      { k: 'd.labelMerge', label: 'Beschriftungen auf gleicher Höhe zusammenfassen (pdPOC · nPOC)', t: 'bool' },
+      { sec: 'Übersicht' },
+      { k: 'd.levelRange', label: 'Level und Zonen nur in Kursnähe zeigen (± %, 0 = alle)', t: 'num', min: 0, max: 100, step: 0.5 },
     ];
     const sx = st.session || {};
     const flat = { theme: st.theme, candles: st.candles, tz: st.tz, sessionOffsetMin: st.sessionOffsetMin, tpoRow: st.tpoRow, vaStep: st.vaStep === 1 ? 1 : 2, 'sx.mode': sx.mode || 'utc', 'sx.start': sx.start || '02:00', 'sx.end': sx.end || '22:00', 'sx.tz': sx.tz || 'Europe/Berlin' };
@@ -1365,9 +1639,11 @@ export class UI {
         Aktuelle TPO-Zeile: ${a.fmt(a.rowSize())} · Session: ${esc(a.sess.label())} · Kerzen geladen: ${nf(0).format(a.bars.length)}<br>
         Tipp: Wie ATAS mit deiner Session = „eigene Zeiten“ 02:00–22:00 Berlin. CME-Futures liegen um die Futures-Prämie über Krypto-Spot/Perp.
       </div>
+      <button class="row-btn" id="sSync">${ICON.layers}<span>Sync PC ↔ Handy (GitHub Gist)</span><b>${a.sync?.cfg.auto && a.sync?.ready ? 'automatisch' : a.sync?.ready ? 'von Hand' : 'aus'}</b></button>
       <div class="dlg-foot"><button class="tb danger" id="sReset">Alles zurücksetzen</button><button class="tb" id="sChart">${ICON.candles}<span>Chart-Farben &amp; Kerzen …</span></button><div class="grow"></div><button class="tb primary" id="sOk">Fertig</button></div></div>`);
     const close = this.modal('Einstellungen', body);
     $('#sChart', body).onclick = () => { close(); this.openChartSettings(); };
+    $('#sSync', body).onclick = () => { close(); this.openSync(); };
     this.bindForm($('.form', body), flat, (immediate) => {
       if (!immediate) return;
       const disp = {};
@@ -1394,8 +1670,23 @@ export class UI {
 
   // ================================================================ Tastatur
   onKey(e) {
-    if (e.key === 'Escape') { if (this.closeTopModal()) { e.preventDefault(); return; } this.closePop(); return; }
+    if (e.key === 'Escape') {
+      if (this.closeTopModal()) { e.preventDefault(); return; }
+      if (this.app.replay?.selecting && !this.app.replay.on) { this.app.replay.exit(); return; }
+      this.closePop(); return;
+    }
     if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    if (this.app.replay?.onKey(e)) { e.preventDefault(); return; }
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.altKey && e.code === 'KeyZ') { e.preventDefault(); this.app.undo(e.shiftKey); return; }
+    if (mod && !e.altKey && e.code === 'KeyY') { e.preventDefault(); this.app.undo(true); return; }
+    if (e.altKey && !mod && e.code === 'KeyK') { e.preventDefault(); this.app.toggleFocus(); return; }
+    if (e.altKey && !mod && !$('#modal .mback')) {
+      const k = e.code.replace('Key', '');
+      const t = e.shiftKey ? { R: 'rect' }[k] : { T: 'trend', H: 'hline', J: 'hray', V: 'vline', F: 'fib' }[k];
+      if (t) { e.preventDefault(); this.pickTool(t); return; }
+      if (!e.shiftKey && k === 'A') { e.preventDefault(); const last = this.app.bars[this.app.bars.length - 1]; if (last) this.app.drawings.addAt('alert', last.c); return; }
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if ($('#modal .mback')) return;
     if (e.key === '/') { e.preventDefault(); this.openIndicatorDialog(); return; }
@@ -1425,6 +1716,15 @@ export class UI {
     };
   }
 }
+
+/** Ebenen: Indikator-Gruppen, die man mit einem Tipp ein- und ausschalten kann. */
+const LAYERS = [
+  ['levels', 'Level (Key Levels, Naked, IB, Sessions, Termine …)', ['keylevels', 'naked', 'inst', 'htfvwap', 'va', 'sfp', 'options', 'sessions', 'events', 'ib']],
+  ['vwap', 'VWAPs (VWAP-Bänder, Rolling VWAP)', ['vwap', 'rvwap', 'compare']],
+  ['profile', 'Profile (TPO, Volume Profile)', ['tpo', 'vp']],
+  ['flow', 'Orderflow (Big Trades, HVB, Volumen, CVD, OI …)', ['bigtrades', 'hvb', 'volcandles', 'liq', 'volume', 'cvd', 'oi', 'funding', 'footprint', 'absorption']],
+  ['std', 'Standard (EMA, Bollinger, RSI, MACD, ATR)', ['ma', 'bb', 'rsi', 'macd', 'atr']],
+];
 
 // ================================================================ Formulare
 const TV_BASE = ['#f23645', '#ff9800', '#ffeb3b', '#4caf50', '#089981', '#00bcd4', '#2962ff', '#673ab7', '#9c27b0', '#e91e63'];
@@ -1489,6 +1789,7 @@ function fieldHtml(f, s) {
     }
     default: input = esc(String(v));
   }
+  if (f.color && f.t !== 'color') input += ' ' + swatchHtml(f.color, s[f.color]);
   if (f.offIf) {
     const off = String(s[f.offIf[0]]) === String(f.offIf[1]);
     input = input.replace(/<(input|select)\b/, `<$1 data-offk="${f.offIf[0]}" data-offv="${f.offIf[1]}" ${off ? 'disabled' : ''}`);

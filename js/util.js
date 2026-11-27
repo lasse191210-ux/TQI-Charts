@@ -357,6 +357,15 @@ export function frameThrottle(fn, minMs = 0) {
 export function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 export function uid() { return Math.random().toString(36).slice(2, 10); }
+/** Meldung nur einmal auslösen, auch wenn mehrere Fenster/Zellen offen sind (gemeinsamer Browser-Speicher). */
+export function claimOnce(key, ms = 60000) {
+  try {
+    const k = 'tqi-claim:' + key, now = Date.now(), t = +localStorage.getItem(k) || 0;
+    if (now - t < ms) return false;
+    localStorage.setItem(k, String(now));
+    return true;
+  } catch { return true; }
+}
 
 export function deepClone(x) { return x == null ? x : JSON.parse(JSON.stringify(x)); }
 

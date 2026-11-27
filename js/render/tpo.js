@@ -295,8 +295,8 @@ export function drawTpoOverlay(ctx, sessions, o, env, blockMs) {
     if (xs == null) continue;
     const fullEnd = xs + total * cellW;
     if (fullEnd < 0 || xs > W) continue;
-    // Session-Beginn links aus dem Bild gescrollt: Profil am linken Rand festhalten (Spalten haben keine Zeitbedeutung)
-    const x0 = o.sticky !== false && xs < 2 * hr && fullEnd > 40 * hr ? 2 * hr : xs;
+    // Profil bleibt an seinem Session-Beginn stehen und scrollt mit dem Chart (am linken Rand festhalten nur auf Wunsch)
+    const x0 = o.sticky === true && xs < 2 * hr && fullEnd > 40 * hr ? 2 * hr : xs;
     const rs = s.rowSize;
     const rowTop = (r) => yOf((s.rowLo + r + 1) * rs), rowBot = (r) => yOf((s.rowLo + r) * rs);
     const y0 = rowTop(s.rows.length - 1), y1 = rowBot(0);

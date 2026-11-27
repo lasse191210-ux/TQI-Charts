@@ -9,21 +9,32 @@ import { ALERT_CONDS } from '../alerts.js';
 
 export const TOOLS = [
   ['cursor', 'Kreuz'], ['trend', 'Trendlinie'], ['ray', 'Strahl'], ['hline', 'Horizontale Linie'], ['hray', 'Horizontaler Strahl'],
-  ['vline', 'Vertikale Linie'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'], ['measure', 'Preisspanne messen'], ['fvp', 'Fixed Range Volume Profile'], ['ftpo', 'Fixed Range TPO'], ['avwap', 'Anchored VWAP'],
-  ['text', 'Text'], ['long', 'Long-Position'], ['short', 'Short-Position'], ['alert', 'Alarm (Preis)'],
+  ['vline', 'Vertikale Linie'], ['channel', 'Paralleler Kanal'], ['arrow', 'Pfeil'], ['rect', 'Rechteck'], ['fib', 'Fibonacci Retracement'],
+  ['measure', 'Datums- und Preisbereich'], ['prange', 'Preisbereich'], ['drange', 'Datumsbereich'],
+  ['fvp', 'Fixed Range Volume Profile'], ['ftpo', 'Fixed Range TPO'], ['avwap', 'Anchored VWAP'],
+  ['text', 'Text'], ['note', 'Notiz (Sprechblase)'], ['long', 'Long-Position'], ['short', 'Short-Position'], ['alert', 'Alarm (Preis)'],
 ];
+/** Werkzeug-Gruppen der linken Leiste wie bei TradingView (Pfeil rechts am Knopf öffnet die Gruppe). */
+export const TOOL_GROUPS = [
+  ['cursor'], ['trend', 'ray', 'channel', 'arrow'], ['hline', 'hray', 'vline'], ['avwap'], ['fvp', 'ftpo'], ['rect'], ['fib'],
+  ['measure', 'prange', 'drange'], ['text', 'note'], ['long', 'short'], ['alert'],
+];
+/** Tastenkürzel wie bei TradingView. */
+export const TOOL_KEYS = { trend: 'Alt+T', hline: 'Alt+H', hray: 'Alt+J', vline: 'Alt+V', fib: 'Alt+F', rect: 'Alt+Shift+R' };
 const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text', 'long', 'short', 'avwap', 'alert']);
 const FIB = [[0, '#787b86'], [0.236, '#f23645'], [0.382, '#ff9800'], [0.5, '#4caf50'], [0.618, '#089981'], [0.786, '#00bcd4'], [1, '#787b86'], [1.618, '#2962ff']];
 export const COLORS = ['#2962ff', '#e91e63', '#7c3aed', '#f0a93b', '#26a69a', '#ef5350', '#131722', '#ffffff'];
 /** Linien-Zeichnungen: Strichart, Beschriftung und Verlängern einstellbar (Rechtsklick → Einstellungen). */
-export const LINE_TYPES = new Set(['trend', 'ray', 'hline', 'hray', 'vline', 'rect']);
+export const LINE_TYPES = new Set(['trend', 'ray', 'hline', 'hray', 'vline', 'rect', 'channel', 'arrow']);
+const RANGES = new Set(['measure', 'prange', 'drange']);
 /** Stil-Eigenschaften, die eine Vorlage speichert (wie TradingView „Vorlage“): keine Preise, kein Text. */
 export const STYLE_KEYS = {
   trend: ['color', 'width', 'dash', 'ext', 'extL'], ray: ['color', 'width', 'dash', 'extL'],
   hline: ['color', 'width', 'dash', 'axis'], hray: ['color', 'width', 'dash', 'axis'], vline: ['color', 'width', 'dash'],
   rect: ['color', 'width', 'dash', 'bgOn', 'bg'], fib: ['color', 'ext'], text: ['color', 'fs', 'bgOn', 'bg', 'bdOn', 'bd'],
   avwap: ['color', 'width', 'src', 'bands'], alert: ['color', 'width', 'cond'], ftpo: ['color', 'mode', 'block', 'vaPct', 'clip'], fvp: ['color', 'mode', 'rows', 'wf'],
-  measure: [], long: [], short: [],
+  channel: ['color', 'width', 'dash', 'ext', 'extL', 'bgOn', 'bg', 'mid'], arrow: ['color', 'width', 'dash'], note: ['color', 'fs', 'bg', 'bdOn', 'bd'],
+  measure: [], prange: [], drange: [], long: [], short: [],
 };
 const dashOf = (d, hr) => (d === 'dashed' ? [6 * hr, 4 * hr] : d === 'dotted' ? [1.5 * hr, 3 * hr] : []);
 
@@ -38,6 +49,7 @@ export class Drawings {
     this.hover = null;
     const self = this;
     this._axisViews = [];
+    this._boxes = new WeakMap(); // Notiz-Boxen (für Treffer), nicht gespeichert
     this.prim = {
       attached({ chart, series, requestUpdate }) { self.chart = chart; self.series = series; self.requestUpdate = requestUpdate; },
       detached() { self.series = null; },
@@ -46,11 +58,21 @@ export class Drawings {
       priceAxisViews() { return self._axisViews; },
     };
     this._bind();
+    // andere Zelle / anderes Fenster hat Zeichnungen dieses Coins geändert → übernehmen
+    window.addEventListener('storage', (e) => {
+      if (e.key !== this.key || this.drag || this.pending) return;
+      try {
+        const sel = this.sel?.id;
+        this.items = (JSON.parse(e.newValue || '[]') || []).filter(x => x && x.type && Array.isArray(x.pts));
+        this.sel = this.items.find(x => x.id === sel) || null;
+        this._axisViews = this._buildAxis(); this.requestUpdate?.();
+      } catch { /* egal */ }
+    });
   }
 
   get key() { return 'tqi-charts:draw:' + this.app.state.base; }
-  load() { this.items = storage.get(this.key, []).filter(x => x && x.type && Array.isArray(x.pts)); this.sel = null; this.pending = null; this._changed(false); }
-  save() { storage.set(this.key, this.items); }
+  load() { this.items = storage.get(this.key, []).filter(x => x && x.type && Array.isArray(x.pts)); this.sel = null; this.pending = null; this._changed(false); this.app.recordHistory?.(); }
+  save() { storage.set(this.key, this.items); this.app.sync?.dirty(); }
   clearAll() { this.items = []; this.sel = null; this._changed(); }
   remove(it) { this.items = this.items.filter(x => x !== it); if (this.sel === it) this.sel = null; this._changed(); }
   /** Zeichnung kopieren (wie TradingView „Klonen“): leicht versetzt, damit man sie sieht. */
@@ -80,11 +102,14 @@ export class Drawings {
     this._changed(false);
   }
   _changed(persist = true) {
-    if (persist) this.save();
+    if (persist) { this.save(); this.app.recordHistory?.(); }
     this._axisViews = this._buildAxis();
     this.requestUpdate?.();
     this.app.ui.onDrawingSelect(this.sel);
   }
+
+  /** Sichtbar? (ausgeblendet im Objektbaum, Sichtbarkeit je Zeiteinheit wie bei Indikatoren) */
+  shown(it) { return !it.hidden && (!it.vis || this.app.visOnTf({ vis: it.vis })); }
 
   // ---------------------------------------------------------------- Koordinaten
   _step() { const tf = this.app.state.tf; return tfMs(tf === '1M' ? '1W' : tf); }
@@ -195,8 +220,13 @@ export class Drawings {
         if (ONE_POINT.has(it.type)) { this._finish(it); return; }
         this.pending = it;
         try { layer.setPointerCapture(e.pointerId); } catch { /* egal */ }
+      } else if (this.pending.type === 'channel' && !this.pending._st) {
+        // Kanal: zweiter Klick setzt das Ende der Linie, danach bestimmt die Maus die Breite, dritter Klick fertig
+        this.pending.pts[1] = pt; this.pending._st = 1; this.pending.off = 0;
+        this.requestUpdate?.();
       } else {
-        this.pending.pts[1] = pt;
+        if (this.pending._st === 1) this.pending.off = pt.p - this._baseAt(this.pending, pt.t);
+        else this.pending.pts[1] = pt;
         this._finish(this.pending);
       }
     });
@@ -205,7 +235,11 @@ export class Drawings {
       const pt = this.pointAt(x, y);
       if (pt) {
         try { this.chart.setCrosshairPosition(pt.p, this.app.bars[Math.max(0, Math.min(this.app.bars.length - 1, Math.round(this.tToL(pt.t))))]?.t / 1000, this.series); } catch { /* egal */ }
-        if (this.pending) { this.pending.pts[1] = pt; this.requestUpdate?.(); }
+        if (this.pending) {
+          if (this.pending._st === 1) this.pending.off = pt.p - this._baseAt(this.pending, pt.t);
+          else this.pending.pts[1] = pt;
+          this.requestUpdate?.();
+        }
       }
     });
     layer.addEventListener('pointerup', (e) => {
@@ -213,6 +247,7 @@ export class Drawings {
       const { x, y } = rel(e, el);
       if (Math.hypot(x - this._down.x, y - this._down.y) > 8) { // gezogen: sofort fertig
         const pt = this.pointAt(x, y);
+        if (this.pending.type === 'channel') { if (!this.pending._st) { if (pt) this.pending.pts[1] = pt; this.pending._st = 1; this.pending.off = 0; } return; }
         if (pt) this.pending.pts[1] = pt;
         this._finish(this.pending);
       }
@@ -282,6 +317,8 @@ export class Drawings {
     if (type === 'avwap') { base.color = '#2962ff'; base.width = 2; base.src = 'hlc3'; base.bands = 1; }
     if (type === 'alert') { base.color = '#131722'; base.width = 1; base.cond = 'cross'; this.app.alerts?.askPermission(); }
     if (type === 'ftpo') { base.color = '#131722'; base.width = 1; base.block = '30m'; base.vaPct = 68; base.clip = false; base.mode = 'letters'; }
+    if (type === 'channel') { base.off = null; base.mid = true; }
+    if (type === 'note') { base.color = '#ffffff'; base.bg = '#2962ff'; base.fs = 13; }
     if (type === 'text') {
       const txt = window.prompt('Text', '');
       if (!txt) { this.setTool('cursor'); return null; }
@@ -299,6 +336,15 @@ export class Drawings {
     return base;
   }
   _finish(it) {
+    if (it.type === 'channel') {
+      delete it._st;
+      if (!Number.isFinite(it.off) || !it.off) it.off = -(Math.abs(it.pts[1].p - it.pts[0].p) * 0.5 || it.pts[0].p * 0.01);
+    }
+    if (it.type === 'note' && !it.text) {
+      const txt = window.prompt('Notiz', '');
+      if (!txt || !txt.trim()) { this.pending = null; this.setTool('cursor'); this.requestUpdate?.(); return; }
+      it.text = txt.trim();
+    }
     this.pending = null;
     if (!this.items.includes(it)) this.items.push(it);
     this.sel = it;
@@ -314,6 +360,7 @@ export class Drawings {
     if (it.type === 'alert') it.fired = null;
     const p0 = this.pointAt(d.x0, d.y0);
     if (it.type === 'avwap') { it.pts[0] = { t: d.handle === 0 ? pt.t : this.lToT(Math.round(this.tToL(d.orig[0].t) + this.tToL(pt.t) - this.tToL(p0.t))), p: pt.p }; this._axisViews = this._buildAxis(); this.requestUpdate?.(); return; }
+    if (d.handle === 'off') { it.off = pt.p - this._baseAt(it, pt.t); this._axisViews = this._buildAxis(); this.requestUpdate?.(); return; }
     if (d.handle === 'stop') it.stop = pt.p;
     else if (d.handle === 'target') it.target = pt.p;
     else if (d.handle === 'right') it.pts[1] = { t: pt.t, p: it.pts[0].p };
@@ -332,16 +379,42 @@ export class Drawings {
     this.requestUpdate?.();
   }
 
+  /** Preis der Grundlinie (Kanal) zu einem Zeitpunkt – linear in Kerzen gerechnet. */
+  _baseAt(it, t) {
+    const a = it.pts[0], b = it.pts[1];
+    const l0 = this.tToL(a.t), l1 = this.tToL(b.t), l = this.tToL(t);
+    if (l0 == null || l1 == null || l == null || l1 === l0) return a.p;
+    return a.p + (b.p - a.p) * (l - l0) / (l1 - l0);
+  }
+  /** Kanal: Grundlinie und Parallele in Bildschirm-Koordinaten (CSS-Pixel), verlängert wie eingestellt. */
+  _chanLines(it, W) {
+    const g = this._geom(it);
+    if (g.x1 == null || g.x2 == null || g.y1 == null || g.y2 == null) return null;
+    const off = it._st === 1 || Number.isFinite(it.off) ? (it.off || 0) : null;
+    const lines = [[g.x1, g.y1, g.x2, g.y2]];
+    if (off != null && (it._st === 1 || it.off)) {
+      const y1 = this.pToY(it.pts[0].p + off), y2 = this.pToY(it.pts[1].p + off);
+      if (y1 != null && y2 != null) lines.push([g.x1, y1, g.x2, y2]);
+    }
+    if (g.x2 !== g.x1) for (const L of lines) {
+      const k = (L[3] - L[1]) / (L[2] - L[0]), x1 = L[0], y1 = L[1];
+      if (it.ext) { const xe = L[2] > x1 ? W : 0; L[3] = y1 + k * (xe - x1); L[2] = xe; }
+      if (it.extL) { const xs = L[2] > x1 ? 0 : W; L[1] = y1 + k * (xs - x1); L[0] = xs; }
+    }
+    return lines;
+  }
+
   // ---------------------------------------------------------------- Treffer
   _geom(it) {
     const a = it.pts[0], b = it.pts[1];
     return { x1: this.tToX(a.t), y1: this.pToY(a.p), x2: this.tToX(b.t), y2: this.pToY(b.p) };
   }
   _hit(x, y) {
-    if (!this.series) return null;
+    if (!this.series || this.app.focus) return null;
     const W = this.app.ui.chartEl.clientWidth;
     for (let k = this.items.length - 1; k >= 0; k--) {
       const it = this.items[k];
+      if (!this.shown(it)) continue;
       const g = this._geom(it);
       if (g.y1 == null) continue;
       const near = (px, py) => px != null && py != null && Math.hypot(x - px, y - py) < 9;
@@ -362,6 +435,7 @@ export class Drawings {
         } else {
           if (near(g.x1, g.y1)) return { item: it, handle: 0 };
           if (!ONE_POINT.has(it.type) && near(g.x2, g.y2)) return { item: it, handle: 1 };
+          if (it.type === 'channel' && it.off && g.x2 != null && near((g.x1 + g.x2) / 2, this.pToY((it.pts[0].p + it.pts[1].p) / 2 + it.off))) return { item: it, handle: 'off' };
         }
       }
       switch (it.type) {
@@ -393,6 +467,25 @@ export class Drawings {
           if (segDist(x, y, x1, y1, x2, y2) < 6) return { item: it };
           break;
         }
+        case 'channel': {
+          const L = this._chanLines(it, W);
+          if (!L) break;
+          if (L.some(l => segDist(x, y, ...l) < 6)) return { item: it };
+          if (L[1]) {
+            const yAt = (l) => (l[2] === l[0] ? l[1] : l[1] + (l[3] - l[1]) * (x - l[0]) / (l[2] - l[0]));
+            const xa = Math.min(L[0][0], L[0][2]), xb = Math.max(L[0][0], L[0][2]);
+            const ya = yAt(L[0]), yb = yAt(L[1]);
+            if (x >= xa && x <= xb && y >= Math.min(ya, yb) && y <= Math.max(ya, yb)) return { item: it };
+          }
+          break;
+        }
+        case 'arrow': if (g.x1 != null && g.x2 != null && segDist(x, y, g.x1, g.y1, g.x2, g.y2) < 6) return { item: it }; break;
+        case 'note': {
+          const b = this._boxes.get(it);
+          if (b && x >= b.x - 3 && x <= b.x + b.w + 3 && y >= b.y - 3 && y <= b.y + b.h + 3) return { item: it };
+          if (g.x1 != null && g.x2 != null && segDist(x, y, g.x1, g.y1, g.x2, g.y2) < 5) return { item: it };
+          break;
+        }
         case 'text': { const f = (it.fs || 13) / 13; if (g.x1 != null && x >= g.x1 - 4 && x <= g.x1 + 8 * f * (it.text?.length || 1) && Math.abs(y - g.y1) < 12 * f) return { item: it }; break; }
         case 'long': case 'short': {
           const ys = [this.pToY(it.stop), this.pToY(it.target)];
@@ -417,8 +510,9 @@ export class Drawings {
     const out = [];
     const add = (p, bg) => out.push({ coordinate: () => this.pToY(p) ?? -100, text: () => this.app.fmt(p), textColor: () => (lightCol(bg) ? '#131722' : '#fff'), backColor: () => bg, visible: () => true, tickVisible: () => true });
     for (const ln of this.app.trader?.lines() || []) add(this._trDrag?.id === ln.id ? this._trDrag.p : ln.p, ln.color);
-    if (this.app.state.drawHide) return out;
+    if (this.app.state.drawHide || this.app.focus) return out;
     for (const it of this.items) {
+      if (!this.shown(it)) continue;
       if (it.type === 'avwap') { const r = this._avwap(it); if (r && r.v.length) add(r.v[r.v.length - 1], it.color); continue; }
       if (it.type === 'hline' || it.type === 'hray') { if (it.axis !== false) add(it.pts[0].p, splitColor(it.color).hex); }
       else if (it.type === 'alert') add(it.pts[0].p, it.fired ? '#787b86' : (this.app.theme.dark ? '#5d606b' : '#131722'));
@@ -431,6 +525,7 @@ export class Drawings {
         if (p) { add(p.poc, '#f0961e'); add(p.vah, '#5b7fe0'); add(p.val, '#5b7fe0'); }
       } else if (it === this.sel) {
         if (it.type === 'long' || it.type === 'short') { add(it.pts[0].p, '#2962ff'); add(it.stop, '#ef5350'); add(it.target, '#26a69a'); }
+        else if (it.type === 'note') add(it.pts[0].p, splitColor(it.bg || '#2962ff').hex);
         else if (it.type !== 'vline' && it.type !== 'text') { add(it.pts[0].p, splitColor(it.color || '#2962ff').hex); add(it.pts[1].p, splitColor(it.color || '#2962ff').hex); }
       }
     }
@@ -458,7 +553,7 @@ export class Drawings {
   _draw(target) {
     if (!this.series) return;
     const trLines = this.app.trader?.lines() || [];
-    const list = this.app.state.drawHide ? [] : (this.pending ? [...this.items, this.pending] : this.items);
+    const list = this.app.state.drawHide || this.app.focus ? [] : (this.pending ? [...this.items.filter(x => this.shown(x)), this.pending] : this.items.filter(x => this.shown(x)));
     if (!list.length && !trLines.length) return;
     const th = this.app.theme;
     target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr }) => {
@@ -559,29 +654,93 @@ export class Drawings {
             handles.push([g.x1, g.y1], [g.x2, g.y2]);
             break;
           }
-          case 'measure': {
+          case 'measure': case 'prange': case 'drange': {
             if (g.x1 == null || g.x2 == null) break;
             const a = it.pts[0], b = it.pts[1];
             const up = b.p >= a.p;
-            const c = up ? '#2962ff' : '#ef5350';
+            const showP = it.type !== 'drange', showD = it.type !== 'prange';
+            const c = !showP ? '#2962ff' : up ? '#2962ff' : '#ef5350';
             ctx.fillStyle = rgba(c, 0.16);
             ctx.fillRect(X(Math.min(g.x1, g.x2)), Y(Math.min(g.y1, g.y2)), X(Math.abs(g.x2 - g.x1)), Y(Math.abs(g.y2 - g.y1)));
             ctx.strokeStyle = c; ctx.lineWidth = Math.max(1, hr);
             const mx = X((g.x1 + g.x2) / 2), my = Y((g.y1 + g.y2) / 2);
-            arrow(ctx, mx, Y(g.y1), mx, Y(g.y2), 6 * hr);
-            arrow(ctx, X(g.x1), my, X(g.x2), my, 6 * hr);
+            if (showP) arrow(ctx, mx, Y(g.y1), mx, Y(g.y2), 6 * hr);
+            if (showD) arrow(ctx, X(g.x1), my, X(g.x2), my, 6 * hr);
+            if (it.type !== 'measure') { // Begrenzung wie TradingView: zwei Linien
+              ctx.beginPath();
+              if (showP) { ctx.moveTo(X(Math.min(g.x1, g.x2)), Math.round(Y(g.y1)) + 0.5); ctx.lineTo(X(Math.max(g.x1, g.x2)), Math.round(Y(g.y1)) + 0.5); ctx.moveTo(X(Math.min(g.x1, g.x2)), Math.round(Y(g.y2)) + 0.5); ctx.lineTo(X(Math.max(g.x1, g.x2)), Math.round(Y(g.y2)) + 0.5); }
+              else { ctx.moveTo(Math.round(X(g.x1)) + 0.5, Y(Math.min(g.y1, g.y2))); ctx.lineTo(Math.round(X(g.x1)) + 0.5, Y(Math.max(g.y1, g.y2))); ctx.moveTo(Math.round(X(g.x2)) + 0.5, Y(Math.min(g.y1, g.y2))); ctx.lineTo(Math.round(X(g.x2)) + 0.5, Y(Math.max(g.y1, g.y2))); }
+              ctx.stroke();
+            }
             const dp = b.p - a.p, pct = dp / a.p * 100;
             const nb = Math.round(this.tToL(b.t) - this.tToL(a.t));
             const ms = Math.abs(b.t - a.t);
             const dur = ms >= 864e5 ? `${Math.floor(ms / 864e5)}T ${Math.round((ms % 864e5) / 36e5)}h` : `${Math.floor(ms / 36e5)}h ${Math.round((ms % 36e5) / 6e4)}m`;
-            const l1 = `${dp >= 0 ? '+' : '−'}${this.app.fmt(Math.abs(dp))} (${fmtPct(pct)})`;
-            const l2 = `${nb} Kerzen, ${dur}`;
+            const lines = [];
+            if (showP) lines.push(`${dp >= 0 ? '+' : '−'}${this.app.fmt(Math.abs(dp))} (${fmtPct(pct)})`);
+            if (showD) lines.push(`${nb} Kerzen, ${dur}`);
+            if (it.type === 'drange') { const v = this._rangeVol(a.t, b.t); if (v > 0) lines.push(`Vol ${fmtCompact(v)}`); }
             ctx.font = font(11.5, 600);
-            const w = Math.max(ctx.measureText(l1).width, ctx.measureText(l2).width) + 16 * hr;
-            const bx = mx - w / 2, by = up ? Y(Math.min(g.y1, g.y2)) - 44 * vr : Y(Math.max(g.y1, g.y2)) + 6 * vr;
-            ctx.fillStyle = c; roundRect(ctx, bx, by, w, 38 * vr, 4 * hr); ctx.fill();
+            const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 16 * hr, bh = (8 + 15 * lines.length) * vr;
+            const bx = mx - w / 2, by = up ? Y(Math.min(g.y1, g.y2)) - bh - 6 * vr : Y(Math.max(g.y1, g.y2)) + 6 * vr;
+            ctx.fillStyle = c; roundRect(ctx, bx, by, w, bh, 4 * hr); ctx.fill();
             ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(l1, mx, by + 12 * vr); ctx.font = font(11); ctx.fillText(l2, mx, by + 27 * vr);
+            lines.forEach((l, k) => { ctx.font = font(k ? 11 : 11.5, k ? 500 : 600); ctx.fillText(l, mx, by + (11.5 + 15 * k) * vr); });
+            if (it.type !== 'measure') handles.push([g.x1, g.y1], [g.x2, g.y2]);
+            break;
+          }
+          case 'channel': {
+            const L = this._chanLines(it, W / hr);
+            if (!L) break;
+            const [b0, b1] = L;
+            if (b1 && it.bgOn !== false) {
+              ctx.fillStyle = it.bg ? cssColor(it.bg) : rgba(it.color || '#2962ff', 0.12);
+              ctx.beginPath(); ctx.moveTo(X(b0[0]), Y(b0[1])); ctx.lineTo(X(b0[2]), Y(b0[3])); ctx.lineTo(X(b1[2]), Y(b1[3])); ctx.lineTo(X(b1[0]), Y(b1[1])); ctx.closePath(); ctx.fill();
+            }
+            for (const l of L) { ctx.beginPath(); ctx.moveTo(X(l[0]), Y(l[1])); ctx.lineTo(X(l[2]), Y(l[3])); ctx.stroke(); }
+            if (b1 && it.mid !== false) {
+              ctx.save(); ctx.setLineDash([4 * hr, 4 * hr]); ctx.lineWidth = Math.max(1, hr); ctx.globalAlpha = 0.8;
+              ctx.beginPath(); ctx.moveTo(X((b0[0] + b1[0]) / 2), Y((b0[1] + b1[1]) / 2)); ctx.lineTo(X((b0[2] + b1[2]) / 2), Y((b0[3] + b1[3]) / 2)); ctx.stroke(); ctx.restore();
+            }
+            handles.push([g.x1, g.y1], [g.x2, g.y2]);
+            if (b1 && it.off) handles.push([(g.x1 + g.x2) / 2, this.pToY((it.pts[0].p + it.pts[1].p) / 2 + it.off)]);
+            break;
+          }
+          case 'arrow': {
+            if (g.x1 == null || g.x2 == null) break;
+            const x1 = X(g.x1), y1 = Y(g.y1), x2 = X(g.x2), y2 = Y(g.y2);
+            const ang = Math.atan2(y2 - y1, x2 - x1), hs = (9 + 2.5 * (it.width || 1)) * hr;
+            const bx2 = x2 - Math.cos(ang) * hs * 0.6, by2 = y2 - Math.sin(ang) * hs * 0.6;
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(bx2, by2); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(x2, y2);
+            ctx.lineTo(x2 - hs * Math.cos(ang - 0.42), y2 - hs * Math.sin(ang - 0.42));
+            ctx.lineTo(x2 - hs * Math.cos(ang + 0.42), y2 - hs * Math.sin(ang + 0.42));
+            ctx.closePath(); ctx.fill();
+            handles.push([g.x1, g.y1], [g.x2, g.y2]);
+            break;
+          }
+          case 'note': {
+            if (g.x1 == null || g.x2 == null) break;
+            const fs = it.fs || 13, bg = cssColor(it.bg || '#2962ff');
+            ctx.font = font(fs, 500);
+            const lines = wrapText(ctx, it.text || (it === this.pending ? 'Notiz' : ''), 240 * hr);
+            const lh = fs * 1.35 * vr, padX = 9 * hr, padY = 6 * vr;
+            const tw = Math.max(1, ...lines.map(l => ctx.measureText(l).width));
+            const bw = tw + 2 * padX, bh = lines.length * lh + 2 * padY;
+            const cx = X(g.x2), cy = Y(g.y2), bx = cx - bw / 2, by = cy - bh / 2;
+            this._boxes.set(it, { x: bx / hr, y: by / vr, w: bw / hr, h: bh / vr });
+            // Spitze zur Ankerstelle (wie eine Sprechblase)
+            const ax = X(g.x1), ay = Y(g.y1), dx = ax - cx, dy = ay - cy, dl = Math.hypot(dx, dy) || 1;
+            const nx = -dy / dl * 8 * hr, ny = dx / dl * 8 * vr;
+            ctx.fillStyle = bg;
+            if (dl > 4) { ctx.beginPath(); ctx.moveTo(cx + nx, cy + ny); ctx.lineTo(ax, ay); ctx.lineTo(cx - nx, cy - ny); ctx.closePath(); ctx.fill(); }
+            roundRect(ctx, bx, by, bw, bh, 5 * hr); ctx.fill();
+            if (it.bdOn) { ctx.strokeStyle = cssColor(it.bd || '#787b86'); ctx.lineWidth = Math.max(1, hr); ctx.stroke(); }
+            ctx.fillStyle = cssColor(it.color || '#ffffff'); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+            lines.forEach((l, k) => ctx.fillText(l, bx + padX, by + padY + lh * (k + 0.5)));
+            ctx.beginPath(); ctx.arc(ax, ay, 2.5 * hr, 0, Math.PI * 2); ctx.fill();
+            handles.push([g.x1, g.y1], [g.x2, g.y2]);
             break;
           }
           case 'avwap': {
@@ -753,7 +912,7 @@ export class Drawings {
           ctx.font = font(11.5, 600); ctx.fillStyle = col; ctx.textBaseline = 'bottom';
           const tw = ctx.measureText(it.label).width;
           if ((it.type === 'hline' || it.type === 'hray') && g.y1 != null) { ctx.textAlign = 'right'; ctx.fillText(it.label, W - 8 * hr, Y(g.y1) - 3 * vr); }
-          else if ((it.type === 'trend' || it.type === 'ray') && g.x2 != null) { ctx.textAlign = g.x2 >= g.x1 ? 'right' : 'left'; ctx.fillText(it.label, X(g.x2), Y(g.y2) - 5 * vr); }
+          else if ((it.type === 'trend' || it.type === 'ray' || it.type === 'arrow' || it.type === 'channel') && g.x2 != null) { ctx.textAlign = g.x2 >= g.x1 ? 'right' : 'left'; ctx.fillText(it.label, X(g.x2), Y(g.y2) - 5 * vr); }
           else if (it.type === 'vline' && g.x1 != null) { ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(it.label, X(g.x1) + 5 * hr, 8 * vr); }
           else if (it.type === 'rect' && g.x1 != null && g.x2 != null) { ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(it.label, X(Math.min(g.x1, g.x2)) + 5 * hr, Y(Math.min(g.y1, g.y2)) + 4 * vr); }
           void tw;
@@ -894,6 +1053,28 @@ Drawings.prototype._ftpoBox = function (it) {
   return { p, xa: xa - half, xb: xb + half, yt, yb };
 };
 
+/** Volumen aller Kerzen zwischen zwei Zeitpunkten (Datumsbereich). */
+Drawings.prototype._rangeVol = function (t0, t1) {
+  const bars = this.app.bars;
+  if (!bars.length) return 0;
+  const a = Math.min(t0, t1), b = Math.max(t0, t1);
+  let v = 0;
+  for (let i = Math.max(0, lowerBound(bars, a)); i < bars.length && bars[i].t <= b; i++) v += bars[i].v || 0;
+  return v;
+};
+/** Text auf mehrere Zeilen umbrechen (max. Breite in Bildpunkten). */
+function wrapText(ctx, text, maxW) {
+  const out = [];
+  for (const para of String(text).split(/\n|\s\|\s/)) {
+    let line = '';
+    for (const w of para.split(/\s+/).filter(Boolean)) {
+      const t = line ? line + ' ' + w : w;
+      if (line && ctx.measureText(t).width > maxW) { out.push(line); line = w; } else line = t;
+    }
+    out.push(line);
+  }
+  return out.length ? out : [''];
+}
 function bell(ctx, x, y, s, c) {
   ctx.save();
   ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = Math.max(1, s / 7);

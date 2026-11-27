@@ -1,24 +1,31 @@
 // Zeichen-Layer auf dem Hauptchart (Lightweight-Charts-Primitive):
 // Linien je Kerze, gefüllte Bänder, horizontale Level ab Zeitpunkt, Boxen, Marker, Blasen,
 // Beschriftungen (ohne Überlappung) und farbige Preis-Labels an der Achse.
-import { floorIndex, tfMs, inkMap } from '../util.js';
+import { floorIndex, tfMs, inkMap, fmtPct } from '../util.js';
 import { volumeProfile, autoRows } from '../calc/vprofile.js';
 import { drawProfile } from './vpdraw.js';
 import { drawTpoOverlay } from './tpo.js';
+import { drawFootprint } from './footprint.js';
 
 export class Scene {
   constructor() { this.clear(); }
   clear() {
     this.lines = []; this.fills = []; this.levels = []; this.boxes = []; this.marks = [];
-    this.bubbles = []; this.axis = []; this.barBoxes = []; this.profiles = []; this.tpos = []; this.barColors = [];
+    this.bubbles = []; this.axis = []; this.barBoxes = []; this.profiles = []; this.tpos = []; this.barColors = []; this.vlines = []; this.footprints = [];
   }
+  /** Footprint-Kerzen: { bars: [{ i, t, o, h, l, c, cells }], rb, o } – über den Kerzen gezeichnet. */
+  footprint(o) { this.footprints.push(o); }
+  /** Senkrechte Linie zu einem Zeitpunkt (Termine wie CPI/FOMC): { t, color, dash, label, lc, width } */
+  vline(o) { this.vlines.push(Object.assign({ color: '#888', dash: 'dashed', width: 1, label: null, lc: null }, o)); }
   /** Kerze einfärben wie TradingView barcolor(): { t (Zeit der Chart-Kerze), color } – Körper, Rand und Docht. */
   barColor(o) { this.barColors.push(o); }
   /** TPO-Profile je Session im Kerzenchart: { sessions, o (Einstellungen), blockMs } */
   tpo(o) { this.tpos.push(o); }
   /** Volumenprofil: { prof | dyn, from, to, place, widthFrac, mode, Farben, pocLine, vaLines, extendPoc } */
   profile(o) { this.profiles.push(o); }
-  line(vals, o = {}) { this.lines.push({ vals, color: o.color || '#888', width: o.width || 1, dash: o.dash || null, breaks: o.breaks || null, label: o.label || null, lc: o.lc || o.color, alpha: o.alpha ?? 1 }); }
+  /** Linie je Kerze. rebase: Vergleichswerte (z. B. Schlusskurse des Charts) – die Linie startet am ersten sichtbaren
+   *  Bar auf derselben Höhe wie diese (Symbol vergleichen wie TradingView, prozentual). */
+  line(vals, o = {}) { this.lines.push({ vals, color: o.color || '#888', width: o.width || 1, dash: o.dash || null, breaks: o.breaks || null, label: o.label || null, lc: o.lc || o.color, alpha: o.alpha ?? 1, rebase: o.rebase || null }); }
   fill(a, b, o = {}) { this.fills.push({ a, b, color: o.color || 'rgba(128,128,128,.15)', breaks: o.breaks || null }); }
   /** Horizontales Level: p, from (ms), to (ms | null = bis rechts), ext (Kerzen nach rechts statt bis Rand). */
   level(o) { this.levels.push(Object.assign({ width: 1, dash: null, color: '#888', label: null, lc: null, to: null, ext: null, alpha: 1 }, o)); }
@@ -53,6 +60,7 @@ export class OverlayPrimitive {
     this._paneBack = { zOrder: () => 'bottom', renderer: () => ({ draw: (t) => this._draw(t, 'back') }) };
     this._paneFront = { zOrder: () => 'normal', renderer: () => ({ draw: (t) => this._draw(t, 'front') }) };
     this._axisPane = { zOrder: () => 'top', renderer: () => ({ draw: (t) => this._drawLastLabel(t) }) };
+    this._paneFp = { zOrder: () => 'top', renderer: () => ({ draw: (t) => this._drawFootprints(t) }) };
   }
   priceAxisPaneViews() { return [this._axisPane]; }
 
@@ -85,7 +93,32 @@ export class OverlayPrimitive {
   }
   attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this.requestUpdate = requestUpdate; }
   detached() { this.chart = null; this.series = null; }
-  paneViews() { return [this._paneBack, this._paneFront]; }
+  paneViews() { return [this._paneBack, this._paneFront, this._paneFp]; }
+  /** Footprint über den Kerzen (eigene Ebene ganz oben, verdeckt die Kerze darunter). */
+  _drawFootprints(target) {
+    const sc = this.scene, bars = this.app.bars;
+    if (!sc.footprints.length || !this.chart || !this.series || !bars.length) return;
+    const ts = this.chart.timeScale(), series = this.series;
+    const vr = ts.getVisibleLogicalRange();
+    if (!vr) return;
+    target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio: hr, verticalPixelRatio: vr2 }) => {
+      const spacing = ts.options().barSpacing || 6;
+      const xOf = (i) => { const x = ts.logicalToCoordinate(i); return x == null ? null : x * hr; };
+      const yOf = (p) => { const y = series.priceToCoordinate(p); return y == null ? null : y * vr2; };
+      const i0 = Math.max(0, Math.floor(vr.from) - 1), i1 = Math.min(bars.length - 1, Math.ceil(vr.to) + 1);
+      const th = this.app.theme;
+      let ok = true;
+      for (const fp of sc.footprints) {
+        try { ok = drawFootprint(ctx, fp, { xOf, yOf, spacing, hr, vr: vr2, W: bitmapSize.width, H: bitmapSize.height, i0, i1, dark: th.dark, bg: th.bg || (th.dark ? '#141413' : '#ffffff') }) && ok; } catch (e) { console.error('Footprint', e); }
+      }
+      if (!ok) {
+        ctx.font = `${Math.round(11 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillStyle = th.dark ? 'rgba(209,212,220,.6)' : 'rgba(19,23,34,.5)';
+        ctx.fillText('Footprint: weiter hineinzoomen', bitmapSize.width / 2, 8 * vr2);
+      }
+    });
+  }
   updateAllViews() { /* Koordinaten werden beim Zeichnen berechnet */ }
   priceAxisViews() { return this._axisViews; }
 
@@ -101,7 +134,17 @@ export class OverlayPrimitive {
       for (const x of scene.bubbles) { x.fill = m(x.fill); x.stroke = m(x.stroke); }
       for (const x of scene.barBoxes) { x.fill = m(x.fill); x.stroke = m(x.stroke); }
       for (const x of scene.barColors) x.color = m(x.color);
+      for (const x of scene.vlines) { x.color = m(x.color); x.lc = m(x.lc); }
       for (const x of scene.axis) if (typeof x.bg === 'string' && (/^#131722/i.test(x.bg) || x.bg.startsWith('rgba(19,23,34,'))) { x.bg = m(x.bg); x.fg = '#131722'; }
+    }
+    // Übersicht: Level und Zonen nur in Kursnähe (Einstellungen → „Level nur in Kursnähe“, 0 = alle)
+    const rng = +this.app.state.display?.levelRange || 0;
+    const last = this.app.bars?.[this.app.bars.length - 1]?.c;
+    if (rng > 0 && last > 0) {
+      const lo = last * (1 - rng / 100), hi = last * (1 + rng / 100);
+      scene.levels = scene.levels.filter(x => x.p >= lo && x.p <= hi);
+      scene.boxes = scene.boxes.filter(x => Math.max(x.top, x.bottom) >= lo && Math.min(x.top, x.bottom) <= hi);
+      scene.axis = scene.axis.filter(x => x.p >= lo && x.p <= hi);
     }
     this.scene = scene;
     const s = this.series;
@@ -205,7 +248,7 @@ export class OverlayPrimitive {
           if (b.to != null) { const ib = idxOfTime(b.to); xb = xOf(ib); }
           else if (b.ext != null) xb = xOf(ia + b.ext);
           else xb = rightX;
-          if (xa == null || xb == null) continue;
+          if (xa == null || xb == null || xb < 0 || xa > W) continue;
           if (b.ext != null && b.to == null && ia + b.ext < i0) continue;
           const y1 = yOf(b.top), y2 = yOf(b.bottom);
           if (y1 == null || y2 == null) continue;
@@ -218,7 +261,34 @@ export class OverlayPrimitive {
             ctx.strokeRect(Math.round(xa) + 0.5, Math.round(yt) + 0.5, Math.max(1, xb - xa), hgt);
             ctx.setLineDash([]);
           }
-          if (b.label) labels.push({ x: b.to == null && b.ext == null ? labelX : xb + 4 * hr, y: yt + hgt / 2, text: b.label, color: b.lc || b.stroke || '#888', align: 'left' });
+          if (b.label && b.labelPos === 'top') labels.push({ x: Math.max(xa, 0) + 4 * hr, y: yt + fontPx * 0.5 + 3 * vr2, text: b.label, color: b.lc || b.stroke || '#888', align: 'left', top: true });
+          else if (b.label) labels.push({ x: b.to == null && b.ext == null ? labelX : xb + 4 * hr, y: yt + hgt / 2, text: b.label, color: b.lc || b.stroke || '#888', align: 'left' });
+        }
+        // Senkrechte Linien (Termine): Linie über die ganze Höhe, Name oben als Fähnchen
+        if (sc.vlines.length) {
+          const lastT = bars[lastIdx].t;
+          const fi = (t) => (t >= lastT + step ? lastIdx + (t - lastT) / step : t <= bars[0].t ? (t - bars[0].t) / step : floorIndex(bars, t));
+          const used = [];
+          for (const v of sc.vlines) {
+            const x0 = xOf(fi(v.t));
+            if (x0 == null || x0 < -20 || x0 > W + 20) continue;
+            const x = Math.round(x0) + 0.5;
+            ctx.strokeStyle = v.color; ctx.lineWidth = Math.max(1, v.width * hr);
+            ctx.setLineDash(v.dash ? DASH[v.dash].map(d => d * hr) : []);
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); ctx.setLineDash([]);
+            if (v.label) {
+              ctx.font = `600 ${Math.round(10 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+              const tw = ctx.measureText(v.label).width + 8 * hr, th = 15 * vr2;
+              let y = 4 * vr2;
+              while (used.some(u => Math.abs(u.x - x) < (u.w + tw) / 2 && Math.abs(u.y - y) < th)) y += th + 2 * vr2;
+              used.push({ x, y, w: tw });
+              ctx.fillStyle = v.color;
+              ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - tw / 2, y, tw, th, 3 * hr) : ctx.rect(x - tw / 2, y, tw, th); ctx.fill();
+              ctx.fillStyle = v.lc || (isLight(v.color) ? '#131722' : '#ffffff');
+              ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+              ctx.fillText(v.label, x, y + th / 2 + 0.5 * vr2);
+            }
+          }
         }
         this._backLabels = labels;
         // Rahmen um einzelne Kerzen (Volumen-Kerzen, HVB)
@@ -239,8 +309,13 @@ export class OverlayPrimitive {
           ctx.setLineDash(ln.dash ? DASH[ln.dash].map(v => v * hr) : []);
           ctx.beginPath();
           let pen = false;
+          let f = 1, iA = -1;
+          if (ln.rebase) {
+            for (let i = Math.max(0, Math.ceil(vr.from)); i <= i1; i++) if (Number.isFinite(ln.vals[i]) && ln.vals[i] > 0 && Number.isFinite(ln.rebase[i])) { iA = i; f = ln.rebase[i] / ln.vals[i]; break; }
+            if (iA < 0) { ctx.globalAlpha = 1; continue; }
+          }
           for (let i = i0; i <= i1; i++) {
-            const v = ln.vals[i];
+            const v = ln.vals[i] * f;
             if (!Number.isFinite(v)) { pen = false; continue; }
             const x = xOf(i), y = yOf(v);
             if (x == null || y == null) { pen = false; continue; }
@@ -249,9 +324,12 @@ export class OverlayPrimitive {
           ctx.stroke();
           ctx.globalAlpha = 1;
           if (ln.label) {
-            const v = ln.vals[lastIdx];
+            let k = lastIdx;
+            while (k > 0 && !Number.isFinite(ln.vals[k])) k--;
+            const v = ln.vals[k] * f;
             const y = Number.isFinite(v) ? yOf(v) : null;
-            if (y != null) labels.push({ x: xOf(lastIdx) + 6 * hr, y, text: ln.label, color: ln.lc || ln.color, align: 'left' });
+            const text = ln.rebase ? `${ln.label} ${fmtPct((ln.vals[k] / ln.vals[iA] - 1) * 100)}` : ln.label;
+            if (y != null) labels.push({ x: xOf(lastIdx) + 6 * hr, y, text, color: ln.lc || ln.color, align: 'left' });
           }
         }
         ctx.setLineDash([]);
@@ -391,6 +469,18 @@ export class OverlayPrimitive {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     const gap = fontPx + 2 * vr2;
+    // Beschriftungen fast auf gleicher Höhe zu einer Zeile zusammenfassen („pdPOC 26.11. · nPOC 26.11.“)
+    if (d.labelMerge !== false && labels.length > 1) {
+      labels.sort((a, b) => a.y - b.y);
+      const out = [];
+      for (const l of labels) {
+        const prev = out[out.length - 1];
+        if (prev && Math.abs(prev.y - l.y) < gap * 0.75 && Math.abs(prev.x - l.x) < 40 * hr && !prev.text.split(' · ').includes(l.text)) { prev.text += ' · ' + l.text; continue; }
+        if (prev && Math.abs(prev.y - l.y) < 1 && prev.text === l.text) continue;
+        out.push({ ...l });
+      }
+      labels = out;
+    }
     if (d.labelNoOverlap !== false) {
       // nach x gruppieren (Spalten), dann vertikal auseinanderschieben
       labels.sort((a, b) => a.y - b.y);

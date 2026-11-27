@@ -11,6 +11,10 @@ import { BigTrades } from './bigtrades.js';
 import { OptionsData } from './options.js';
 import { Alerts } from './alerts.js';
 import { Trader } from './trader.js';
+import { Replay } from './replay.js';
+import { LevelAlerts } from './levelalerts.js';
+import { Journal } from './journal.js';
+import { Sync } from './sync.js';
 import { buildDayProfiles, autoRowSize, firstTouch } from './calc/profile.js';
 import { heikinAshi } from './calc/std.js';
 import * as U from './util.js';
@@ -23,7 +27,12 @@ const INITIAL_BARS = { '1m': 1500, '3m': 1500, '5m': 1500, '15m': 1500, '30m': 1
 export class App {
   constructor(root) {
     this.root = root;
-    const saved = U.storage.get(APP.key, null);
+    let saved = U.storage.get(APP.key, null);
+    // weitere Zelle im Mehrfach-Layout: beim ersten Mal vom Haupt-Chart übernehmen, andere Zeiteinheit
+    if (!saved && APP.slot > 1) {
+      const main = U.storage.get('tqi-charts:v1', null);
+      if (main) saved = { ...main, tf: ['1h', '4h', '1D'][APP.slot - 2] || main.tf, rightOpen: false, chartType: main.chartType === 'tpo' ? 'candles' : main.chartType, levelAlerts: main.levelAlerts };
+    }
     this.state = U.mergeDefaults(DEFAULT_STATE, saved || {});
     if (saved && Array.isArray(saved.indicators)) this.state.indicators = saved.indicators.filter(x => TYPES[x.type]).map(x => ({ ...x, s: U.mergeDefaults(TYPES[x.type].defaults, x.s) }));
     if (!Array.isArray(this.state.indicators)) this.state.indicators = this.templateIndicators(this.state.template || 'bild');
@@ -56,6 +65,7 @@ export class App {
     setInterval(() => this.bt.save(), 30000);
     window.addEventListener('pagehide', () => this.bt.save());
     this.alerts = new Alerts(this);
+    this.lvAlerts = new LevelAlerts(this);
     this.tpoSel = null;
     // Daten anderer Börsen (Indikator-Einstellung „Daten von“): alle 30 s abgleichen
     setInterval(() => this.refreshFeeds(), 30000);
@@ -148,6 +158,9 @@ export class App {
   async init() {
     this.ui = new UI(this);
     this.trader = new Trader(this);
+    this.replay = new Replay(this);
+    this.journal = new Journal(this);
+    this.sync = new Sync(this);
     this.ui.build();
     this.createChart();
     this.drawings = new Drawings(this);
@@ -158,6 +171,7 @@ export class App {
     this.hub.on('resync', (store) => { if (store === this.chartStore) this.fullRender(); else this._recompute(); });
     this.ui.renderAll();
     await this.loadSymbol();
+    this.sync.start();
     if (this.trader.open) this.trader.start();
     // Vorlage per Link (#tpl=TQI1....) übernehmen – beim Öffnen und wenn der Link in der offenen Seite eingefügt wird
     const tplFromHash = () => {
@@ -215,7 +229,7 @@ export class App {
   titleCtx() { const b = this.state.base; return { marketId: this.state.market, feedOk: (m) => !this._feedFailed?.has(`${m}|${b}`) }; }
   fmt(p, dec) { return U.fmtPrice(p, dec ?? this.priceDec); }
 
-  saveState() { U.storage.set(APP.key, this.state); }
+  saveState() { U.storage.set(APP.key, this.state); this.sync?.dirty(); }
   setState(patch, { reload = false, render = true } = {}) {
     Object.assign(this.state, patch);
     this._save();
@@ -383,14 +397,17 @@ export class App {
     const seq = ++this.loadSeq;
     const { market: mk, base, tf } = this.state;
     this.ui.setLoading(true, `${this.market.ticker(base)} · ${this.market.label}`);
+    this.replay?.reset();
     this.hub.stopLive();
     this.hub.prune(mk, base);
     this.ext = { oi: null, funding: null };
     this.liqList = []; this.tape = []; this.fine.clear(); this.fineQueue = [];
     this.data.clear();
     this._barCols = null; this._barColSig = null; this._loadedAt = Date.now();
+    this.hist = { undo: [], redo: [], last: null };
     this.alerts?.reset();
-    this.tpoSel = null;
+    this.lvAlerts?.reset();
+    this.tpoSel = null; this.crossIdx = null;
     this.trader?.onSymbol();
     for (const uid of [...this.panes.keys()]) this.removePane(uid);
     if (this.chartStoreOff) this.chartStoreOff();
@@ -438,7 +455,7 @@ export class App {
     if (!this.chartStore) return;
     const r = this.chart.timeScale().getVisibleLogicalRange();
     const prevFirst = this._firstT;
-    this.bars = this.chartStore.bars;
+    this.bars = this.replay?.on ? this.chartStore.bars.slice(0, U.lowerBound(this.chartStore.bars, this.replay.t) + 1) : this.chartStore.bars;
     this.view = this.makeView();
     this.series.setData(this.seriesData(this.view));
     this._seriesLen = this.view.length;
@@ -470,9 +487,10 @@ export class App {
   async ensureNeeds() {
     const ctx = this.makeCtx();
     const req = new Map();
-    const add = (tf, from, count, market) => {
-      const key = (market && market !== this.state.market ? market : '') + '|' + tf;
-      const r = req.get(key) || { tf, market: market || null, from: Infinity, count: 0 };
+    const add = (tf, from, count, market, base) => {
+      const ob = base && base !== this.state.base ? base : null;
+      const key = (market && market !== this.state.market ? market : '') + '|' + tf + (ob ? '|' + ob : '');
+      const r = req.get(key) || { tf, market: market || null, base: ob, from: Infinity, count: 0 };
       if (from != null) r.from = Math.min(r.from, from);
       if (count) r.count = Math.max(r.count, count);
       req.set(key, r);
@@ -482,14 +500,14 @@ export class App {
     for (const ind of this.state.indicators) {
       const T = TYPES[ind.type];
       if (!T || !T.needs) continue;
-      try { for (const n of T.needs(ind.s, ctx)) add(n.tf, n.from ?? null, n.count ?? 0, n.market && MARKETS[n.market] ? n.market : null); } catch (e) { console.error(e); }
+      try { for (const n of T.needs(ind.s, ctx)) add(n.tf, n.from ?? null, n.count ?? 0, n.market && MARKETS[n.market] ? n.market : null, n.base || null); } catch (e) { console.error(e); }
     }
     const { market: mk, base } = this.state;
     const seq = this.loadSeq;
     const jobs = [];
     for (const r of req.values()) {
       const tf = r.tf;
-      const st = this.hub.store(r.market || mk, base, tf);
+      const st = this.hub.store(r.market || mk, r.base || base, tf);
       jobs.push((async () => {
         try {
           if (!st.bars.length) {
@@ -498,7 +516,8 @@ export class App {
           }
           if (Number.isFinite(r.from)) await st.ensureFrom(r.from);
         } catch (e) {
-          console.warn('Daten', r.market || mk, tf, e);
+          console.warn('Daten', r.market || mk, r.base || base, tf, e);
+          if (r.base && !st.bars.length) { (this._feedFailed ||= new Set()).add(`${r.market || mk}|${r.base}`); this.ui.toast(`${r.base} gibt es auf ${this.market.label} nicht`, 'info', 3500); this.ui.renderLegend(); return; }
           if (r.market && !st.bars.length) {
             // Coin auf dieser Börse nicht vorhanden → Indikator rechnet mit den Chart-Daten
             (this._feedFailed ||= new Set()).add(`${r.market}|${base}`);
@@ -519,36 +538,45 @@ export class App {
     const app = this;
     const profCache = new Map();
     const sess = this.sess;
-    const store = (t) => { const s = app.hub.stores.get(`${mk}|${base}|${t}`); return s && s.bars.length ? s : null; };
+    const rp = this.replay?.on ? this.replay : null;
+    const cut = rp ? rp.cut : Infinity;
+    const now = rp ? cut : Date.now();
+    const clip = (s, t) => (s && s.bars.length ? (rp ? rp.slice(s, t) : s) : null);
+    const store = (t) => clip(app.hub.stores.get(`${mk}|${base}|${t}`), t);
     return {
-      bars: this.bars, tf, tfMs: U.tfMs(tf), now: Date.now(), offset: this.offset, isTpo: this.isTpo,
+      bars: this.bars, tf, tfMs: U.tfMs(tf), now, offset: this.offset, isTpo: this.isTpo, replay: !!rp,
       market: this.market, marketId: mk, base, theme: this.theme, display: this.display,
       sess, vaStep: this.vaStep,
       store,
       /** Kerzen einer anderen Börse (gleicher Coin), z. B. für den Rolling VWAP „wie TradingView“. */
       feedOk: (m) => !this._feedFailed?.has(`${m}|${base}`),
-      storeOf: (m, t) => { if (!m || m === mk) return store(t); const s = app.hub.stores.get(`${m}|${base}|${t}`); return s && s.bars.length ? s : null; },
+      storeOf: (m, t) => { if (!m || m === mk) return store(t); return clip(app.hub.stores.get(`${m}|${base}|${t}`), t); },
+      /** Kerzen eines anderen Coins (Symbol vergleichen), gleiche Börse. */
+      symStore: (b, t) => clip(app.hub.stores.get(`${mk}|${b}|${t}`), t),
+      symFailed: (b) => !!this._feedFailed?.has(`${mk}|${b}`),
       rowSize: () => this.rowSize(),
       profiles: (rs) => {
         const r = rs > 0 ? rs : this.rowSize();
         if (profCache.has(r)) return profCache.get(r);
         const m30 = store('30m');
-        const p = m30 ? buildDayProfiles(m30.bars, { rowSize: r, sess, now: Date.now() }) : null;
+        const p = m30 ? buildDayProfiles(m30.bars, { rowSize: r, sess, now }) : null;
         profCache.set(r, p);
         return p;
       },
       /** Beginn der aktuellen (bzw. letzten) Session. */
       sessStart: (t) => { const x = sess.last(t); return x ? x[0] : U.periodStart(t, 'day', this.offset); },
       idx: (t) => { if (!this.bars.length || t < this.bars[0].t) return null; return U.floorIndex(this.bars, t); },
-      fine: (t0, t1, live, tf) => this.fineBars(t0, t1, live, tf),
+      fine: (t0, t1, live, tf) => { const f = this.fineBars(t0, t1, live, tf); return f && rp ? f.filter(b => b.t < cut) : f; },
       ext: (k) => this.ext[k],
-      bigTrades: (min) => this.bt.active ? this.bt.orders(min > 0 ? min : this.autoBigUsd()) : [],
+      bigTrades: (min) => { const l = this.bt.active ? this.bt.orders(min > 0 ? min : this.autoBigUsd()) : []; return rp ? l.filter(o => o.t < cut) : l; },
       autoBig: () => this.autoBigUsd(),
       avgMinVol: () => this.avgMinVol(),
       hvbAlert: (h, tf) => this.hvbAlert(h, tf),
       btInfo: () => this.bt.info(),
+      /** Footprint-Daten (Bid/Ask je Preisstufe) aus den Trades: bar(t0, t1), from = ab hier vollständig. */
+      fp: () => { const f = this.bt.fp; return f && this.bt.key === `${mk}|${base}` ? { bar: (t0, t1) => f.bar(t0, Math.min(t1, cut)), from: this.bt.fpFrom, rb: f.rb } : null; },
       options: (cur, maxAge) => this.opt.get(cur, maxAge),
-      liqs: () => this.liqList,
+      liqs: () => (rp ? this.liqList.filter(x => x.t < cut) : this.liqList),
     };
   }
 
@@ -592,9 +620,7 @@ export class App {
     if (first && Date.now() - this._loadedAt < 5000) return; // beim Laden keine alten Signale melden
     const name = this.market.ticker(this.state.base);
     const txt = `High Volume Bar ${name} ${tf}: ${h.bull ? 'steigend' : 'fallend'}, Z-Score ${U.nf(1).format(h.z)}`;
-    this.ui.toast('🔔 ' + txt, 'alert', 10000);
-    this.alerts?.beep();
-    try { if ('Notification' in window && Notification.permission === 'granted') new Notification('TQI Charts · High Volume Bar', { body: txt, tag: 'tqi-hvb-' + key }); } catch { /* egal */ }
+    if (U.claimOnce('hvb|' + key, 6 * 3600e3)) this.lvAlerts.notify(txt, 'High Volume Bar', { push: this.lvAlerts.cfg.hvb });
   }
   /** Notwert, solange noch kein Durchschnittsvolumen bekannt ist (USD). */
   autoBigUsd() {
@@ -634,6 +660,7 @@ export class App {
     this._forceNext = false;
     const ctx = this.makeCtx();
     const scene = new Scene();
+    let hidden = null;
     for (const ind of this.state.indicators) {
       const T = TYPES[ind.type];
       if (!T) continue;
@@ -643,9 +670,17 @@ export class App {
       this.data.set(ind.uid, d);
       if (T.pane === 'own') { try { this.updatePane(on ? ind : { ...ind, visible: false }, T, d); } catch (e) { console.error(ind.type, e); const p = this.panes.get(ind.uid); if (p) p.lens = {}; } continue; }
       if (!on || !d || !T.draw) continue;
-      try { T.draw(ind.s, d, scene, ctx); } catch (e) { console.error(ind.type, e); }
+      // im Fokus nichts zeigen, aber trotzdem sammeln (für die Level-Alarme)
+      const sc = this.focus ? (hidden ||= new Scene()) : scene;
+      const n0 = sc.levels.length, n1 = sc.lines.length, n2 = sc.boxes.length;
+      try { T.draw(ind.s, d, sc, ctx); } catch (e) { console.error(ind.type, e); }
+      for (let k = n0; k < sc.levels.length; k++) sc.levels[k].src = ind.type;
+      for (let k = n1; k < sc.lines.length; k++) sc.lines[k].src = ind.type;
+      for (let k = n2; k < sc.boxes.length; k++) sc.boxes[k].src = ind.type;
     }
-    if (this.isTpo && this.tpoView) this.updateTpo(scene, ctx);
+    try { this.lvAlerts?.update(hidden || scene); } catch (e) { console.error('Level-Alarme', e); }
+    if (!this.focus) this.journal?.draw(scene, this.replay?.on ? this.replay.cut : Infinity);
+    if (this.isTpo && this.tpoView && !this.focus) this.updateTpo(scene, ctx);
     this.applyBarColors(scene);
     // überzählige Panels entfernen
     for (const uid of [...this.panes.keys()]) if (!this.state.indicators.some(x => x.uid === uid)) this.removePane(uid);
@@ -727,6 +762,7 @@ export class App {
   onTrade(tr) {
     if (this.bt.active) this.bt.onTrade(tr);
     this.alerts.check(tr.p);
+    this.lvAlerts.check(tr.p);
     // Tape und große Trades (gleicher Zeitstempel + Seite = eine Marktorder)
     const usd = tr.p * tr.q;
     const last = this.tape[this.tape.length - 1];
@@ -747,6 +783,7 @@ export class App {
   }
 
   liveUpdate() {
+    if (this.replay?.on) { this.ui.renderTape(); return; } // Bar Replay: Chart bleibt beim Replay-Zeitpunkt
     if (!this.chartStore || this.chartStore.bars !== this.bars) { if (this.chartStore) this.fullRender(); return; }
     const n = this.bars.length;
     if (!n) return;
@@ -757,6 +794,21 @@ export class App {
     this._recompute();
     this.ui.updateHeader();
     this.ui.renderTape();
+  }
+
+  /** Bar Replay: eine (oder mehrere) Kerzen weiter – nur die neuen Kerzen an die Serie geben. */
+  replayStep() {
+    const all = this.chartStore?.bars;
+    if (!all || !this.replay?.on) return;
+    const n = U.lowerBound(all, this.replay.t) + 1;
+    const prev = this._seriesLen ?? n;
+    this.bars = all.slice(0, n);
+    this.view = this.makeView();
+    if (n < prev) this.series.setData(this.seriesData(this.view));
+    else for (const x of this.seriesData(this.view.slice(Math.max(0, prev - 1)))) this.series.update(x);
+    this._seriesLen = n;
+    this.recompute();
+    this.ui.updateHeader();
   }
 
   onWake() {
@@ -827,7 +879,9 @@ export class App {
   refreshFeeds() {
     if (document.visibilityState !== 'visible') return;
     const { market: mk, base } = this.state;
-    const list = [...this.hub.stores.values()].filter(s => s.base === base && s.marketId !== mk && s.bars.length);
+    // andere Börsen desselben Coins (Rolling VWAP) und andere Coins (Symbol vergleichen)
+    const cmp = new Set(this.state.indicators.filter(x => x.type === 'compare' && x.visible).map(x => String(x.s.sym || '').toUpperCase()));
+    const list = [...this.hub.stores.values()].filter(s => s.bars.length && ((s.base === base && s.marketId !== mk) || (s.marketId === mk && cmp.has(s.base))));
     if (!list.length) return;
     (async () => {
       for (const s of list) { try { await s.resyncTail(3); } catch { /* später */ } await U.sleep(200); }
@@ -1055,8 +1109,53 @@ export class App {
   templateName(key = this.state.template) {
     return (this.state.userTpls || []).find(t => t.id === key)?.name || TEMPLATES[key]?.name || 'Eigene Einstellungen';
   }
+  // ---------------------------------------------------------------- Rückgängig / Wiederholen (Strg+Z / Strg+Y)
+  _snap() { return JSON.stringify({ base: this.state.base, d: this.drawings?.items || [], i: this.state.indicators }); }
+  /** Nach jeder Änderung an Zeichnungen oder Indikatoren aufrufen: alter Stand wandert auf den Rückgängig-Stapel. */
+  recordHistory() {
+    if (this._restoring) return;
+    const now = this._snap();
+    const h = (this.hist ||= { undo: [], redo: [], last: null });
+    if (h.last && h.last !== now) {
+      const prev = JSON.parse(h.last);
+      if (prev.base === this.state.base) { h.undo.push(h.last); if (h.undo.length > 100) h.undo.shift(); h.redo = []; }
+    }
+    h.last = now;
+  }
+  undo(redo = false) {
+    const h = this.hist;
+    const from = redo ? h?.redo : h?.undo, to = redo ? h?.undo : h?.redo;
+    if (!from?.length) { this.ui.toast(redo ? 'Nichts zum Wiederholen' : 'Nichts rückgängig zu machen', 'info', 1400); return; }
+    const snap = from.pop();
+    to.push(this._snap());
+    const o = JSON.parse(snap);
+    this._restoring = true;
+    try {
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      if (!same(o.i, this.state.indicators)) {
+        const keep = new Set(o.i.map(x => x.uid));
+        for (const uid of [...this.panes.keys()]) if (!keep.has(uid)) this.removePane(uid);
+        for (const x of o.i) { const cur = this.state.indicators.find(y => y.uid === x.uid); if (cur && TYPES[x.type]?.pane === 'own' && !same(cur.s, x.s)) this.removePane(x.uid); }
+        this.state.indicators = o.i;
+        this.afterIndicatorChange(true);
+      }
+      if (this.drawings && !same(o.d, this.drawings.items)) { this.drawings.items = o.d; this.drawings.sel = null; this.drawings._changed(true); }
+    } finally { this._restoring = false; }
+    h.last = this._snap();
+    this.ui.toast(redo ? 'Wiederholt' : 'Rückgängig', 'info', 900);
+  }
+  /** Fokus: nur Kerzen (Indikatoren und Zeichnungen kurz ausblenden, ohne etwas zu ändern). */
+  toggleFocus(force) {
+    this.focus = force ?? !this.focus;
+    document.body.classList.toggle('focus-mode', this.focus);
+    this.recompute(true);
+    this.drawings?._changed(false);
+    this.ui.renderTopbar?.();
+    this.ui.toast(this.focus ? 'Fokus: nur Kerzen (Alt+K zum Zurückschalten)' : 'Fokus aus', 'info', 1600);
+  }
   afterIndicatorChange(needData = false) {
     this._save();
+    this.recordHistory();
     this.syncBigTrades();
     this.ui.renderTopbar();
     this.ui.renderMobile();
@@ -1070,6 +1169,9 @@ export class App {
     const patch = { base };
     if (market) patch.market = market;
     this.setState(patch, { reload: true });
+    // Mehrfach-Layout: „Symbol koppeln“
+    if (APP.embed && !this._symRemote) window.parent.postMessage({ type: 'tqi-sym', base, market: market || this.state.market }, location.origin);
+    this._symRemote = false;
   }
   setTf(tf) {
     if (tf === this.state.tf) return;
@@ -1093,18 +1195,26 @@ export class App {
   /** Big Trades: Historie/Live nur, wenn der Indikator da ist; anderes Symbol → neu. */
   syncBigTrades() {
     const ind = this.state.indicators.find(x => x.type === 'bigtrades' && x.visible);
+    // Footprint (und Absorption ohne Kaufvolumen in den Kerzen) brauchen alle Trades
+    const fpOn = this.state.indicators.some(x => x.visible && (x.type === 'footprint' || (x.type === 'absorption' && !Number.isFinite(this.bars[this.bars.length - 1]?.bv))));
     const key = `${this.state.market}|${this.state.base}`;
-    if (ind && this.bars.length) {
+    if ((ind || fpOn) && this.bars.length) {
       // merken ab einem Viertel der kleinsten Auto-Schwelle (Schwach) bzw. der halben festen Mindestgröße
       const px = this.bars[this.bars.length - 1].c, amv = this.avgMinVol();
-      const keep = Math.min(amv ? BT_AUTO.weak * amv * px / 4 : this.autoBigUsd() / 8, ind.s.auto ? Infinity : (+ind.s.minVol || 0) * px / 2 || Infinity);
+      const keep = ind ? Math.min(amv ? BT_AUTO.weak * amv * px / 4 : this.autoBigUsd() / 8, ind.s.auto ? Infinity : (+ind.s.minVol || 0) * px / 2 || Infinity) : this.autoBigUsd() / 4;
       this.bt.start(this.state.market, this.state.base, keep);
+      this.bt.footprint(fpOn, px);
       const r = this.chart.timeScale().getVisibleLogicalRange();
       const i = r ? Math.max(0, Math.min(this.bars.length - 1, Math.floor(r.from))) : Math.max(0, this.bars.length - 100);
       this.bt.want(this.bars[i].t, this.btHours());
     } else if (this.bt.active && this.bt.key !== key) this.bt.stop();
+    else if (this.bt.fp && !fpOn) this.bt.footprint(false);
   }
-  btHours() { const ind = this.state.indicators.find(x => x.type === 'bigtrades'); return ind ? ind.s.hours : 0; }
+  btHours() {
+    let h = 0;
+    for (const x of this.state.indicators) if (x.visible && (x.type === 'bigtrades' || x.type === 'footprint')) h = Math.max(h, +x.s.hours || 0);
+    return h;
+  }
   /** TPO-Knopf: TPO im Kerzenchart ein/aus. Im eigenen TPO-Chart: zurück zum vorherigen Charttyp und zur vorherigen Zeiteinheit. */
   toggleTpo() {
     if (!this.isTpo) {

@@ -1,6 +1,7 @@
 // Alle Indikatoren: Einstellungen, Rechnung und Zeichnung.
 // Hauptchart-Indikatoren zeichnen in die Scene (overlay.js), Panel-Indikatoren liefern Plots für eigene Panels.
-import { DAY, MIN, periodStart, periodPrev, nf, fmtDayLabel, minutesToTf, rgba, mixHex, tfMs, niceStep, lowerBound, splitColor, weekStart, floorTf, INK, INK2, POC } from './util.js';
+import { DAY, MIN, periodStart, periodPrev, nf, fmtDayLabel, minutesToTf, rgba, mixHex, tfMs, niceStep, lowerBound, splitColor, weekStart, floorTf, INK, INK2, POC, Sessions, zonedTime, fmtTime, fmtPrice } from './util.js';
+import { ECON_EVENTS } from './config.js';
 import { MARKETS } from './exchanges.js';
 import { sessionProfiles } from './calc/vprofile.js';
 import { buildTpoSessions } from './render/tpo.js';
@@ -707,7 +708,7 @@ const TPO_BLOCK_OPTS = [['5m', '5 Minuten'], ['15m', '15 Minuten'], ['30m', '30 
 const tpoInd = {
   type: 'tpo', name: 'TPO (Market Profile)', cat: 'tqi', pane: 'main',
   desc: 'Market Profile je Tag direkt im Kerzenchart (TPO und Kerzen zusammen): Buchstaben oder Blöcke, POC, Value Area, Initial Balance, Single Prints.',
-  defaults: { block: '30m', rows: 0, vaPct: 68, ibMin: 60, count: 2, display: 'letters', colors: 'mono', mono: 'auto', opacity: 0.8, width: 1, poc: true, pocColor: POC, va: true, vaColor: INK, vaFill: false, vaFillColor: INK2, vaFillOpacity: 0.06, lines: 'profile', names: true, axis: true, ib: false, ibColor: INK2, singles: false, singleColor: INK2 },
+  defaults: { block: '30m', rows: 0, vaPct: 68, ibMin: 60, count: 2, display: 'letters', colors: 'mono', mono: 'auto', opacity: 0.8, width: 1, poc: true, pocColor: POC, va: true, vaColor: INK, vaFill: false, vaFillColor: INK2, vaFillOpacity: 0.06, lines: 'profile', names: true, axis: true, ib: false, ibColor: INK2, singles: false, singleColor: INK2, sticky: false },
   schema: [
     { sec: 'Profil' },
     { k: 'block', label: 'Zeit pro Buchstabe (TPO-Periode)', t: 'select', opts: TPO_BLOCK_OPTS },
@@ -731,6 +732,7 @@ const tpoInd = {
     { k: 'axis', label: 'Preis-Labels an der Achse (heute)', t: 'bool' },
     { k: 'ib', label: 'Initial Balance (Balken links)', t: 'bool', color: 'ibColor' },
     { k: 'singles', label: 'Single Prints hervorheben', t: 'bool', color: 'singleColor' },
+    { k: 'sticky', label: 'Profil am linken Rand festhalten beim Scrollen (sonst bleibt es an seinem Tag stehen)', t: 'bool' },
   ],
   title(s) { return `TPO ${s.block} · VA ${s.vaPct} %`; },
   needs(s, c) { return [{ tf: s.block, from: c.sess.back(c.now, s.count) - DAY }, { tf: '1D', count: 60 }]; },
@@ -1356,6 +1358,385 @@ const atrInd = {
   compute(s, c) { return { plots: { atr: { values: atr(c.bars, s), color: s.color } } }; },
 };
 
-export const REGISTRY = [vwap, rvwap, hvb, tpoInd, keylevels, optionsInd, htfvwap, va, vpInd, naked, sfpInd, inst, volcandles, volume, cvdInd, oiInd, fundingInd, bigtrades, liq, ma, bb, rsiInd, macdInd, atrInd];
+// ============================================================================ TQI: Session-Boxen (Asia, London, New York)
+const SESS_TZ = [['Europe/Berlin', 'Berlin'], ['Europe/London', 'London'], ['America/New_York', 'New York'], ['America/Chicago', 'Chicago'], ['Asia/Tokyo', 'Tokio'], ['UTC', 'UTC']];
+const SESS_KEYS = [['a', 'Asia'], ['l', 'London'], ['n', 'New York']];
+const sessionsInd = {
+  type: 'sessions', name: 'Session-Boxen (Asia, London, New York)', cat: 'tqi', pane: 'main',
+  desc: 'Box mit Hoch und Tief je Handels-Session. Hoch/Tief laufen danach weiter bis zur ersten Berührung (wie die Naked Levels).',
+  defaults: {
+    days: 5, maxTf: '1h', weekend: false, hl: 'touch', mid: false, labels: true, range: false, fillA: 7,
+    a_on: true, a_name: 'Asia', a_start: '01:00', a_end: '09:00', a_tz: 'Europe/Berlin', a_col: '#7c4dff',
+    l_on: true, l_name: 'London', l_start: '09:00', l_end: '15:30', l_tz: 'Europe/Berlin', l_col: '#2962ff',
+    n_on: true, n_name: 'New York', n_start: '09:30', n_end: '16:00', n_tz: 'America/New_York', n_col: '#ff9800',
+  },
+  schema: [
+    { sec: '1 · Allgemein' },
+    { k: 'days', label: 'Anzahl Tage', t: 'int', min: 1, max: 60 },
+    { k: 'maxTf', label: 'Nur zeigen bis Zeiteinheit', t: 'select', opts: [['15m', '15 Min.'], ['30m', '30 Min.'], ['1h', '1 Std.'], ['4h', '4 Std.']] },
+    { k: 'weekend', label: 'Auch am Wochenende', t: 'bool' },
+    { k: 'hl', label: 'Hoch / Tief nach der Session', t: 'select', opts: [['touch', 'bis zur ersten Berührung'], ['right', 'immer bis rechts'], ['none', 'nicht zeigen']] },
+    { k: 'mid', label: 'Mitte (50 %) zeigen', t: 'bool' },
+    { k: 'labels', label: 'Name in der Box', t: 'bool' },
+    { k: 'range', label: 'Spanne (Hoch − Tief) im Namen', t: 'bool', offIf: ['labels', false] },
+    { k: 'fillA', label: 'Deckkraft der Box (%)', t: 'int', min: 0, max: 60 },
+    ...SESS_KEYS.flatMap(([k, n], j) => [
+      { sec: `${j + 2} · ${n}` },
+      { k: k + '_on', label: 'zeigen', t: 'bool', color: k + '_col' },
+      { k: k + '_name', label: 'Name', t: 'text', offIf: [k + '_on', false] },
+      { k: k + '_start', label: 'Beginn (HH:MM)', t: 'text', offIf: [k + '_on', false] },
+      { k: k + '_end', label: 'Ende (HH:MM)', t: 'text', offIf: [k + '_on', false] },
+      { k: k + '_tz', label: 'Zeitzone', t: 'select', opts: SESS_TZ, offIf: [k + '_on', false] },
+    ]),
+  ],
+  title(s) { return 'Sessions ' + SESS_KEYS.filter(([k]) => s[k + '_on']).map(([k]) => s[k + '_name']).join(' '); },
+  needs() { return []; },
+  compute(s, c) {
+    const bars = c.bars;
+    if (!bars.length || c.isTpo) return { list: [] };
+    if (c.tfMs > tfMs(s.maxTf || '1h')) return { list: [], off: true };
+    const lastT = bars[bars.length - 1].t, out = [];
+    for (const [k] of SESS_KEYS) {
+      if (!s[k + '_on']) continue;
+      let S;
+      try { S = new Sessions({ mode: 'custom', start: s[k + '_start'], end: s[k + '_end'], tz: s[k + '_tz'] }); } catch { continue; }
+      const list = [];
+      for (let cur = S.last(lastT + c.tfMs - 1), g = 0; cur && list.length < s.days && g < s.days * 3 + 10; cur = S.last(cur[0] - 1), g++) {
+        const wd = new Date(cur[2]).getUTCDay();
+        if (!s.weekend && (wd === 0 || wd === 6)) continue;
+        list.push(cur);
+      }
+      for (const [st, en] of list) {
+        if (en <= bars[0].t) continue;
+        let i = lowerBound(bars, st), hi = -Infinity, lo = Infinity, i0 = i;
+        for (; i < bars.length && bars[i].t < en; i++) { const b = bars[i]; if (b.h > hi) hi = b.h; if (b.l < lo) lo = b.l; }
+        if (!Number.isFinite(hi) || i === i0) continue;
+        const live = lastT + c.tfMs <= en;
+        let hiTouch = null, loTouch = null;
+        if (!live) for (let j = i; j < bars.length; j++) {
+          if (hiTouch == null && bars[j].h >= hi) hiTouch = bars[j].t;
+          if (loTouch == null && bars[j].l <= lo) loTouch = bars[j].t;
+          if (hiTouch != null && loTouch != null) break;
+        }
+        out.push({ k, st, en, lastIn: bars[i - 1].t, hi, lo, live, hiTouch, loTouch, name: s[k + '_name'] || '', color: s[k + '_col'] });
+      }
+    }
+    return { list: out };
+  },
+  draw(s, d, sc, c) {
+    const fa = Math.max(0, Math.min(60, +s.fillA || 0)) / 100;
+    for (const x of d.list) {
+      const col = x.color;
+      const lab = s.labels ? (s.range ? `${x.name} ${fmtPrice(x.hi - x.lo)} (${n2((x.hi - x.lo) / x.lo * 100)} %)` : x.name) : null;
+      sc.box({ from: x.st, to: x.lastIn, top: x.hi, bottom: x.lo, fill: rgba(col, fa), stroke: rgba(col, 0.55), label: lab, lc: col, labelPos: 'top' });
+      if (s.mid) sc.level({ p: (x.hi + x.lo) / 2, from: x.st, to: x.lastIn, color: rgba(col, 0.6), dash: 'dotted' });
+      if (x.live || s.hl === 'none') continue;
+      for (const [p, touch, tag] of [[x.hi, x.hiTouch, 'H'], [x.lo, x.loTouch, 'L']]) {
+        if (s.hl === 'touch' && touch != null) sc.level({ p, from: x.lastIn, to: touch, color: rgba(col, 0.7), dash: 'dotted' });
+        else sc.level({ p, from: x.lastIn, color: rgba(col, 0.8), dash: 'dotted', label: `${x.name} ${tag}`, lc: col });
+      }
+    }
+    void c;
+  },
+};
+
+// ============================================================================ TQI: RTH Initial Balance
+const IB_EXT = { none: [], '1': [1], '0.5,1': [0.5, 1], '1,1.5,2': [1, 1.5, 2], '0.5,1,1.5,2,3': [0.5, 1, 1.5, 2, 3], '1,2,3': [1, 2, 3] };
+const ibInd = {
+  type: 'ib', name: 'RTH Initial Balance (IB)', cat: 'tqi', pane: 'main',
+  desc: 'Erste Stunde der US-Hauptsitzung (RTH 09:30–10:30 New York): IB-Hoch, IB-Tief, Mitte und Erweiterungen (Vielfache der IB-Spanne). Zeiten einstellbar.',
+  defaults: {
+    start: '09:30', ibMin: 60, end: '16:00', tz: 'America/New_York', days: 5, weekdays: true,
+    box: true, mid: true, ext: '1,1.5,2', extendTo: 'session', labels: true, labelsPast: false, range: true,
+    color: INK, fill: INK2 + '1a', extColor: INK2, midColor: INK2,
+  },
+  schema: [
+    { sec: '1 · Zeiten' },
+    { k: 'start', label: 'RTH-Beginn (HH:MM)', t: 'text' },
+    { k: 'ibMin', label: 'Länge der IB', t: 'select', opts: [[15, '15 Min.'], [30, '30 Min.'], [60, '60 Min. (Standard)'], [90, '90 Min.'], [120, '2 Std.']] },
+    { k: 'end', label: 'RTH-Ende (HH:MM)', t: 'text' },
+    { k: 'tz', label: 'Zeitzone', t: 'select', opts: SESS_TZ },
+    { k: 'days', label: 'Anzahl Tage', t: 'int', min: 1, max: 60 },
+    { k: 'weekdays', label: 'Nur Montag bis Freitag', t: 'bool' },
+    { sec: '2 · Anzeige' },
+    { k: 'box', label: 'IB als Box (während der IB)', t: 'bool', color: 'fill' },
+    { k: 'mid', label: 'IB-Mitte (50 %)', t: 'bool', color: 'midColor' },
+    { k: 'ext', label: 'Erweiterungen (× IB-Spanne)', t: 'select', opts: [['none', 'keine'], ['1', '1×'], ['0.5,1', '0,5× 1×'], ['1,1.5,2', '1× 1,5× 2×'], ['1,2,3', '1× 2× 3×'], ['0.5,1,1.5,2,3', '0,5× 1× 1,5× 2× 3×']], color: 'extColor' },
+    { k: 'extendTo', label: 'Linien bis', t: 'select', opts: [['session', 'Ende der RTH'], ['right', 'heute bis rechts, sonst RTH-Ende']] },
+    { k: 'labels', label: 'Beschriftung (IBH, IBL …)', t: 'bool' },
+    { k: 'labelsPast', label: 'auch an vergangenen Tagen', t: 'bool', offIf: ['labels', false] },
+    { k: 'range', label: 'IB-Spanne in der Box', t: 'bool' },
+    { sec: '3 · Farben', tab: 'style' },
+    { k: 'color', label: 'IB-Hoch / -Tief', t: 'color' },
+  ],
+  title(s) { return `RTH IB ${s.start} ${s.ibMin}m`; },
+  needs(s, c) { return c.tfMs <= 5 * MIN ? [] : [{ tf: '5m', count: Math.min(5000, (s.days + 2) * 300) }]; },
+  compute(s, c) {
+    if (!c.bars.length || c.tfMs >= DAY) return { list: [] };
+    const src = c.tfMs <= 5 * MIN ? c.bars : c.store('5m')?.bars;
+    if (!src || !src.length) return { list: [] };
+    let S;
+    try { S = new Sessions({ mode: 'custom', start: s.start, end: s.end, tz: s.tz }); } catch { return { list: [] }; }
+    const ibMs = (+s.ibMin || 60) * MIN, lastT = src[src.length - 1].t, step = c.tfMs <= 5 * MIN ? c.tfMs : 5 * MIN;
+    const out = [];
+    for (let cur = S.last(lastT + step - 1), g = 0; cur && out.length < s.days && g < s.days * 3 + 10; cur = S.last(cur[0] - 1), g++) {
+      const [st, en, day] = cur;
+      const wd = new Date(day).getUTCDay();
+      if (s.weekdays && (wd === 0 || wd === 6)) continue;
+      const ibEnd = st + ibMs;
+      let i = lowerBound(src, st), hi = -Infinity, lo = Infinity, n = 0;
+      for (; i < src.length && src[i].t < ibEnd; i++) { if (src[i].h > hi) hi = src[i].h; if (src[i].l < lo) lo = src[i].l; n++; }
+      if (!n) { if (st < src[0].t) break; continue; }
+      const live = lastT + step <= ibEnd; // IB läuft noch
+      // erster Ausbruch nach der IB (innerhalb der RTH)
+      let up = null, dn = null;
+      for (let j = i; j < src.length && src[j].t < en; j++) { if (up == null && src[j].h > hi) up = src[j].t; if (dn == null && src[j].l < lo) dn = src[j].t; if (up != null && dn != null) break; }
+      out.push({ st, ibEnd, en, hi, lo, live, up, dn, today: lastT < en });
+    }
+    return { list: out.reverse() };
+  },
+  draw(s, d, sc, c) {
+    const ext = IB_EXT[s.ext] || [];
+    const nf2 = (x) => n2(x);
+    for (const x of d.list) {
+      const R = x.hi - x.lo;
+      const to = x.today && s.extendTo === 'right' ? null : x.en - 1;
+      const lab = s.labels && (x.today || s.labelsPast);
+      if (s.box) sc.box({ from: x.st, to: Math.min(x.ibEnd - 1, c.now), top: x.hi, bottom: x.lo, fill: s.fill, stroke: rgba(s.color, 0.35), label: s.range ? `IB ${fmtPrice(R)} (${nf2(R / x.lo * 100)} %)` : 'IB', lc: s.color, labelPos: 'top' });
+      if (x.live) continue;
+      sc.level({ p: x.hi, from: x.st, to, color: s.color, width: 1, label: lab ? 'IBH' : null, lc: s.color });
+      sc.level({ p: x.lo, from: x.st, to, color: s.color, width: 1, label: lab ? 'IBL' : null, lc: s.color });
+      if (s.mid) sc.level({ p: (x.hi + x.lo) / 2, from: x.st, to, color: s.midColor, dash: 'dotted', label: lab ? 'IB Mitte' : null, lc: s.midColor });
+      for (const k of ext) {
+        const t = String(k).replace('.', ',') + '×';
+        sc.level({ p: x.hi + k * R, from: x.ibEnd, to, color: rgba(s.extColor, 0.8), dash: 'dashed', label: lab ? `IBH +${t}` : null, lc: s.extColor });
+        sc.level({ p: x.lo - k * R, from: x.ibEnd, to, color: rgba(s.extColor, 0.8), dash: 'dashed', label: lab ? `IBL −${t}` : null, lc: s.extColor });
+      }
+    }
+  },
+};
+
+// ============================================================================ Wirtschaftstermine (CPI, FOMC …)
+const eventsInd = {
+  type: 'events', name: 'Termine: CPI, FOMC, NFP, PPI', cat: 'tqi', pane: 'main',
+  desc: 'Senkrechte Linien zu den US-Terminen (Uhrzeit New York, automatisch in deine Zeit umgerechnet). Kommender Termin mit Countdown.',
+  defaults: { fomc: true, fomcCol: '#f23645', cpi: true, cpiCol: '#2962ff', nfp: true, nfpCol: '#ff9800', ppi: false, ppiCol: '#7c4dff', next: true, dash: 'dashed' },
+  schema: [
+    { k: 'fomc', label: 'FOMC Zinsentscheid (20:00 dt. Zeit)', t: 'bool', color: 'fomcCol' },
+    { k: 'cpi', label: 'CPI Inflation (14:30)', t: 'bool', color: 'cpiCol' },
+    { k: 'nfp', label: 'NFP Arbeitsmarkt (14:30)', t: 'bool', color: 'nfpCol' },
+    { k: 'ppi', label: 'PPI Erzeugerpreise (14:30)', t: 'bool', color: 'ppiCol' },
+    { k: 'next', label: 'Nächsten Termin mit Countdown zeigen', t: 'bool' },
+    { k: 'dash', label: 'Linienart', t: 'select', opts: [['dashed', 'gestrichelt'], ['dotted', 'gepunktet'], ['solid', 'durchgezogen']] },
+  ],
+  title(s) {
+    const now = Date.now();
+    let next = null;
+    for (const [k, ev] of Object.entries(ECON_EVENTS)) {
+      if (!s[k]) continue;
+      for (const d of ev.days) { const [y, m, dd] = d.split('-').map(Number); const t = zonedTime('America/New_York', y, m, dd, ev.at[0], ev.at[1]); if (t > now && (!next || t < next.t)) next = { t, name: ev.name }; }
+    }
+    return 'Termine ' + Object.keys(ECON_EVENTS).filter(k => s[k]).map(k => ECON_EVENTS[k].name).join(' ') + (s.next && next ? ` · nächster: ${next.name} ${countdownShort(next.t - now)}` : '');
+  },
+  needs() { return []; },
+  compute(s, c) {
+    const list = [];
+    for (const [k, ev] of Object.entries(ECON_EVENTS)) {
+      if (!s[k]) continue;
+      for (const d of ev.days) {
+        const [y, m, dd] = d.split('-').map(Number);
+        list.push({ k, name: ev.name, t: zonedTime('America/New_York', y, m, dd, ev.at[0], ev.at[1]) });
+      }
+    }
+    list.sort((a, b) => a.t - b.t);
+    const now = c.now;
+    const next = list.find(x => x.t > now) || null;
+    return { list, next };
+  },
+  draw(s, d, sc, c) {
+    const first = c.bars[0]?.t ?? 0;
+    for (const x of d.list) {
+      if (x.t < first - c.tfMs) continue;
+      if (x.t > c.now + 45 * DAY) break;
+      const col = s[x.k + 'Col'];
+      let label = x.name;
+      if (s.next && d.next && x === d.next) label += ' · ' + countdownShort(x.t - c.now);
+      sc.vline({ t: x.t, color: rgba(col, 0.75), dash: s.dash === 'solid' ? null : s.dash, label, lc: '#ffffff' });
+    }
+  },
+};
+function countdownShort(ms) {
+  const m = Math.max(0, Math.round(ms / MIN)), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
+  return d > 0 ? `in ${d}T ${h}h` : h > 0 ? `in ${h}h ${mi}m` : `in ${mi}m`;
+}
+
+// ============================================================================ Symbol vergleichen
+const compareInd = {
+  type: 'compare', name: 'Symbol vergleichen', cat: 'std', pane: 'main', multi: true,
+  desc: 'Anderen Coin als Linie über die Kerzen legen – startet am ersten sichtbaren Bar auf gleicher Höhe, rechts die Veränderung in % (wie TradingView „Vergleichen“).',
+  defaults: { sym: 'ETH', color: '#ff9800', width: 2 },
+  schema: [
+    { k: 'sym', label: 'Coin (z. B. ETH, SOL, XRP)', t: 'text' },
+    { k: 'color', label: 'Farbe', t: 'color' },
+    { k: 'width', label: 'Linienbreite', t: 'width' },
+  ],
+  title(s) { return 'Vergleich ' + String(s.sym || '').toUpperCase().trim(); },
+  needs(s, c) {
+    const b = String(s.sym || '').toUpperCase().trim();
+    return b && b !== c.base && /^[A-Z0-9]{2,12}$/.test(b) ? [{ tf: c.tf, count: Math.min(5000, c.bars.length + 20), base: b }] : [];
+  },
+  compute(s, c) {
+    const b = String(s.sym || '').toUpperCase().trim();
+    if (!b || b === c.base) return null;
+    const st = c.symStore(b, c.tf);
+    if (!st) return null;
+    const ob = st.bars, n = c.bars.length;
+    const vals = new Array(n).fill(NaN), ref = new Array(n);
+    let j = 0;
+    for (let i = 0; i < n; i++) {
+      const t = c.bars[i].t;
+      ref[i] = c.bars[i].c;
+      while (j < ob.length && ob[j].t < t) j++;
+      if (j < ob.length && ob[j].t === t) vals[i] = ob[j].c;
+    }
+    return { vals, ref, sym: b };
+  },
+  draw(s, d, sc) { sc.line(d.vals, { color: s.color, width: s.width, label: d.sym, rebase: d.ref }); },
+};
+
+// ============================================================================ Orderflow: Footprint
+const footprintInd = {
+  type: 'footprint', name: 'Footprint (Bid × Ask)', cat: 'of', pane: 'main',
+  desc: 'Verkauf (Bid) × Kauf (Ask) der aggressiven Orders je Preisstufe in jeder Kerze – aus den Trades der Börse (live ab dem Öffnen und geladene Historie). Imbalances diagonal wie ATAS, POC je Kerze, Delta und Volumen darunter. Zum Lesen hineinzoomen.',
+  defaults: { mode: 'bidask', row: 0, ratio: 250, minImb: 0, poc: true, pocCol: POC, stacked: true, stats: true, hours: 2, maxTf: '1h', bidCol: '#f23645', askCol: '#089981', numSpacing: 60 },
+  schema: [
+    { sec: '1 · Darstellung' },
+    { k: 'mode', label: 'Anzeige', t: 'select', opts: [['bidask', 'Bid × Ask (wie ATAS BidAsk)'], ['delta', 'Delta je Preisstufe'], ['volume', 'Volumen je Preisstufe']] },
+    { k: 'row', label: 'Preisstufe (0 = automatisch nach Zoom)', t: 'num', min: 0, max: 100000, step: 0.01 },
+    { k: 'poc', label: 'POC je Kerze', t: 'bool', color: 'pocCol' },
+    { k: 'stats', label: 'Delta und Volumen unter der Kerze', t: 'bool' },
+    { k: 'numSpacing', label: 'Zahlen ab Kerzenbreite (Pixel)', t: 'int', min: 30, max: 200 },
+    { sec: '2 · Imbalances (diagonal)' },
+    { k: 'ratio', label: 'Imbalance ab (%)', t: 'int', min: 110, max: 2000 },
+    { k: 'minImb', label: 'Mindestvolumen (Coins), 0 = aus', t: 'num', min: 0, max: 1e9, step: 0.001 },
+    { k: 'stacked', label: 'Gestapelte Imbalances (≥ 3) als Balken', t: 'bool' },
+    { sec: '3 · Daten' },
+    { k: 'hours', label: 'Historie laden (Stunden)', t: 'int', min: 0, max: 24 },
+    { k: 'maxTf', label: 'Nur zeigen bis Zeiteinheit', t: 'select', opts: [['5m', '5 Min.'], ['15m', '15 Min.'], ['1h', '1 Std.'], ['4h', '4 Std.']] },
+    { sec: 'Farben', tab: 'style' },
+    { k: 'bidCol', label: 'Verkauf (Bid)', t: 'color' }, { k: 'askCol', label: 'Kauf (Ask)', t: 'color' },
+  ],
+  title(s) { return 'Footprint ' + ({ bidask: 'Bid × Ask', delta: 'Delta', volume: 'Volumen' }[s.mode] || '') + ' ' + s.ratio + ' %'; },
+  needs() { return []; },
+  compute(s, c) {
+    const fp = c.fp();
+    if (c.isTpo || c.tfMs > tfMs(s.maxTf || '1h')) return { bars: [], rb: 1, note: 'nur bis ' + s.maxTf };
+    if (!fp) return { bars: [], rb: 1, note: 'lädt …' };
+    const bars = c.bars, out = [];
+    for (let i = bars.length - 1; i >= 0 && out.length < 800; i--) {
+      const b = bars[i], t1 = b.t + c.tfMs;
+      if (t1 <= fp.from) break;
+      const cells = fp.bar(b.t, t1);
+      if (!cells.size) continue;
+      out.push({ i, t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, cells, partial: b.t < fp.from });
+    }
+    return { bars: out.reverse(), rb: fp.rb, note: c.btInfo() };
+  },
+  draw(s, d, sc) { if (d.bars.length) sc.footprint({ bars: d.bars, rb: d.rb, o: s }); },
+};
+
+// ============================================================================ Orderflow: Absorption
+const absorptionInd = {
+  type: 'absorption', name: 'Absorption (Delta gegen Preis)', cat: 'of', pane: 'main',
+  desc: 'Starkes Delta in eine Richtung, aber der Preis kommt kaum weiter (Mehr-Kerzen-Absorption), optional mit Delta-Flip als Bestätigung. Zone läuft bis zur ersten Berührung. Delta aus den Kerzen der Börse (Binance) bzw. aus dem Footprint.',
+  defaults: { win: 2, k: 1.5, prog: 0.3, look: 50, flip: true, zone: 'touch', bull: '#089981', bear: '#f23645', text: 'A', maxZones: 30 },
+  schema: [
+    { sec: '1 · Regeln' },
+    { k: 'win', label: 'Kerzen (Cluster)', t: 'select', opts: [[1, '1 Kerze'], [2, '2 Kerzen'], [3, '3 Kerzen']] },
+    { k: 'k', label: 'Delta mind. × Durchschnitt (je Kerze)', t: 'num', min: 0.5, max: 10, step: 0.1 },
+    { k: 'prog', label: 'Preis kommt höchstens so weit (× Ø-Kerzenspanne)', t: 'num', min: 0, max: 2, step: 0.05 },
+    { k: 'look', label: 'Durchschnitt über letzte Kerzen', t: 'int', min: 10, max: 500 },
+    { k: 'flip', label: 'Bestätigung: Delta dreht in der nächsten Kerze (Delta-Flip)', t: 'bool' },
+    { sec: '2 · Anzeige' },
+    { k: 'zone', label: 'Zone', t: 'select', opts: [['touch', 'bis zur ersten Berührung'], ['right', 'immer bis rechts'], ['none', 'keine Zone']] },
+    { k: 'maxZones', label: 'Max. Zonen', t: 'int', min: 1, max: 200 },
+    { k: 'text', label: 'Zeichen am Signal', t: 'text' },
+    { k: 'bull', label: 'Käufer absorbieren (bullish)', t: 'color' }, { k: 'bear', label: 'Verkäufer absorbieren (bearish)', t: 'color' },
+  ],
+  title(s) { return `Absorption ${s.win}K ${n2(s.k)}×${s.flip ? ' Flip' : ''}`; },
+  needs() { return []; },
+  compute(s, c) {
+    const bars = c.bars, n = bars.length;
+    const delta = new Float64Array(n).fill(NaN);
+    const fp = c.fp();
+    let src = 0;
+    for (let i = 0; i < n; i++) {
+      const b = bars[i];
+      if (Number.isFinite(b.bv) && b.v > 0) { delta[i] = 2 * b.bv - b.v; src |= 1; continue; }
+      if (fp && b.t >= fp.from) { const cells = fp.bar(b.t, b.t + c.tfMs); if (cells.size) { let d = 0; for (const x of cells.values()) d += x[1] - x[0]; delta[i] = d; src |= 2; } }
+    }
+    const w = Math.max(1, Math.min(3, +s.win || 2)), L = Math.max(10, +s.look || 50);
+    const out = [];
+    let lastBull = -1, lastBear = -1;
+    for (let i = L + w; i < n; i++) {
+      // Durchschnitt |Delta| und Kerzenspanne vor dem Fenster
+      let sa = 0, na = 0, sr = 0;
+      for (let j = i - w - L + 1; j <= i - w; j++) { if (Number.isFinite(delta[j])) { sa += Math.abs(delta[j]); na++; } sr += bars[j].h - bars[j].l; }
+      if (na < L * 0.6) continue;
+      const avgD = sa / na, avgR = sr / L;
+      let sum = 0, allNeg = true, allPos = true, ok = true, lo = Infinity, hi = -Infinity, iLo = i, iHi = i;
+      for (let j = i - w + 1; j <= i; j++) {
+        const d = delta[j];
+        if (!Number.isFinite(d)) { ok = false; break; }
+        sum += d; if (d >= 0) allNeg = false; if (d <= 0) allPos = false;
+        if (bars[j].l < lo) { lo = bars[j].l; iLo = j; } if (bars[j].h > hi) { hi = bars[j].h; iHi = j; }
+      }
+      if (!ok) continue;
+      const open = bars[i - w + 1].o, close = bars[i].c;
+      const nxt = i + 1 < n ? delta[i + 1] : NaN;
+      // Verkäufer aggressiv, Preis fällt kaum → Käufer absorbieren (bullish)
+      if (allNeg && sum <= -s.k * avgD * w && open - close <= s.prog * avgR && i - w >= lastBull) {
+        if (s.flip && !(nxt > 0)) continue;
+        const bodyLo = Math.min(bars[iLo].o, bars[iLo].c);
+        out.push({ dir: 1, i, mi: s.flip ? i + 1 : i, from: bars[i - w + 1].t, bottom: lo, top: bodyLo > lo ? bodyLo : lo + 0.15 * avgR, sum });
+        lastBull = i;
+        continue;
+      }
+      // Käufer aggressiv, Preis steigt kaum → Verkäufer absorbieren (bearish)
+      if (allPos && sum >= s.k * avgD * w && close - open <= s.prog * avgR && i - w >= lastBear) {
+        if (s.flip && !(nxt < 0)) continue;
+        const bodyHi = Math.max(bars[iHi].o, bars[iHi].c);
+        out.push({ dir: -1, i, mi: s.flip ? i + 1 : i, from: bars[i - w + 1].t, top: hi, bottom: bodyHi < hi ? bodyHi : hi - 0.15 * avgR, sum });
+        lastBear = i;
+      }
+    }
+    // Zone bis zur ersten Berührung nach dem Signal
+    for (const x of out) {
+      x.touch = null;
+      for (let j = x.mi + 1; j < n; j++) {
+        if (x.dir > 0 ? bars[j].l <= x.top : bars[j].h >= x.bottom) { x.touch = bars[j].t; break; }
+      }
+    }
+    return { list: out, note: src ? null : 'kein Delta: Börse liefert kein Kaufvolumen – Footprint hinzufügen' };
+  },
+  draw(s, d, sc, c) {
+    const bars = c.bars;
+    const list = d.list.slice(-Math.max(1, s.maxZones || 30));
+    for (const x of d.list) {
+      const b = bars[x.mi];
+      if (!b) continue;
+      const col = x.dir > 0 ? s.bull : s.bear;
+      sc.mark({ i: x.mi, p: x.dir > 0 ? b.l : b.h, shape: 'text', text: s.text || 'A', color: col, below: x.dir > 0, fs: 11 });
+    }
+    if (s.zone === 'none') return;
+    for (const x of list) {
+      const col = x.dir > 0 ? s.bull : s.bear;
+      const to = s.zone === 'touch' ? x.touch : null;
+      sc.box({ from: x.from, to: to ?? null, top: x.top, bottom: x.bottom, fill: rgba(col, 0.13), stroke: rgba(col, 0.45), label: to == null ? 'Abs' : null, lc: col });
+    }
+  },
+};
+
+export const REGISTRY = [vwap, rvwap, hvb, tpoInd, keylevels, optionsInd, htfvwap, va, vpInd, naked, sfpInd, inst, sessionsInd, ibInd, eventsInd, volcandles, volume, cvdInd, oiInd, fundingInd, bigtrades, footprintInd, absorptionInd, liq, ma, bb, rsiInd, macdInd, atrInd, compareInd];
 export const TYPES = Object.fromEntries(REGISTRY.map(t => [t.type, t]));
 export const CATEGORIES = [['tqi', 'Meine Indikatoren (TQI)'], ['of', 'Orderflow'], ['std', 'Standard']];

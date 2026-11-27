@@ -1,7 +1,7 @@
 // Preis-Alarme: Alarm-Linien (Zeichenwerkzeug „Alarm“) werden bei jedem Trade geprüft.
 // Auslösung: Hinweis im Chart, Ton, Vibration und – wenn erlaubt – System-Benachrichtigung.
 // Funktioniert, solange die Seite geöffnet ist (Handy: App/Tab im Vordergrund).
-import { fmtPrice } from './util.js';
+import { fmtPrice, claimOnce } from './util.js';
 
 export const ALERT_CONDS = [['cross', 'kreuzt'], ['up', 'steigt über'], ['down', 'fällt unter']];
 
@@ -44,9 +44,11 @@ export class Alerts {
     const a = this.app;
     it.fired = Date.now();
     a.drawings._changed();
+    if (!claimOnce('alert|' + it.id, 30000)) return; // schon in einer anderen Zelle / einem anderen Fenster gemeldet
     const name = a.market.ticker(a.state.base);
     const txt = `${name} ${up ? '↑' : '↓'} ${fmtPrice(it.pts[0].p, a.priceDec)}${it.note ? ' · ' + it.note : ''}`;
     a.ui.toast('🔔 Alarm: ' + txt + ` (Kurs ${fmtPrice(price, a.priceDec)})`, 'alert', 12000);
+    a.lvAlerts?.pushText('Alarm: ' + txt + ` (Kurs ${fmtPrice(price, a.priceDec)})`);
     this.beep();
     try { navigator.vibrate?.([200, 100, 200]); } catch { /* egal */ }
     try {

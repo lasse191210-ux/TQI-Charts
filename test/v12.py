@@ -61,6 +61,7 @@ class Bybit:
         elif p == '/v5/position/set-leverage': code = 110043
         elif p == '/v5/order/create': res = {'orderId': 'ord-' + str(len(self.reqs)) + '-abcdef', 'orderLinkId': (json.loads(body) or {}).get('orderLinkId')}
         elif p in ('/v5/position/trading-stop', '/v5/order/cancel-all', '/v5/order/cancel'): res = {}
+        elif p in ('/v5/execution/list', '/v5/position/closed-pnl'): res = {'list': [], 'nextPageCursor': ''}
         else: return route.fulfill(status=404, headers=cors, content_type='application/json', body='{}')
         return route.fulfill(status=200, headers=cors, content_type='application/json', body=json.dumps({'retCode': code, 'retMsg': 'OK' if not code else 'leverage not modified', 'result': res}))
     def last(self, path):

@@ -1,5 +1,5 @@
 // Grundeinstellungen, Coins, Vorlagen und Farbthemen.
-export const APP = { name: 'TQI Charts', version: '1.5.0', key: 'tqi-charts:v1' };
+export const APP = { name: 'TQI Charts', version: '1.6.0', key: 'tqi-charts:v1' };
 
 export const COINS = [
   ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['SOL', 'Solana'], ['XRP', 'XRP'], ['BNB', 'BNB'], ['DOGE', 'Dogecoin'],
@@ -84,13 +84,14 @@ export const DEFAULT_STATE = {
   watchlist: ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE', 'SUI', 'LINK', 'AVAX', 'ADA', 'LTC'],
   favTfs: ['1m', '5m', '15m', '1h', '4h', '1D'],
   rightPanel: 'watch', rightOpen: true,
-  display: { labelSize: 10, labelOffset: 3, labelNoOverlap: true, labelBg: false },
+  display: { labelSize: 10, labelOffset: 3, labelNoOverlap: true, labelBg: false, labelMerge: true, levelRange: 0 },
   tpoRow: 0, log: false, pct: false, autoScale: true,
   magnet: false, drawLock: false, drawHide: false,
   tapeMin: 0, domStep: 0, legendOpen: true,
   myDefaults: {}, recentColors: [], countdown: true, symLabel: true,
   chartCol: { up: 'auto', down: 'auto', borderUp: 'auto', borderDown: 'auto', wickUp: 'auto', wickDown: 'auto', borderVis: true, bg: 'auto', grid: 'auto', gridV: true, gridH: true, text: 'auto', crosshair: 'auto', crossStyle: 'large', border: 'auto', priceLine: true },
   trader: { env: 'demo', risk: 50, lev: 0, type: 'limit', fees: true, slip: 0.05, keepLines: false, lines: true },
+  levelAlerts: null, toolPick: {},
 };
 
 export const THEMES = {
@@ -113,4 +114,24 @@ export const CANDLE_STYLES = {
   tv: { name: 'Grün / Rot', up: '#26a69a', down: '#ef5350', wickUp: '#26a69a', wickDown: '#ef5350', borderUp: '#26a69a', borderDown: '#ef5350' },
   sw: { name: 'Schwarz / Weiß (wie Bild)', light: { up: '#ffffff', down: '#131722', wickUp: '#131722', wickDown: '#131722', borderUp: '#131722', borderDown: '#131722' }, dark: { up: '#e8e6e1', down: '#5d5c58', wickUp: '#e8e6e1', wickDown: '#8a8984', borderUp: '#e8e6e1', borderDown: '#8a8984' } },
   tqi: { name: 'TQI Pink / Violett', up: '#7c3aed', down: '#db2777', wickUp: '#7c3aed', wickDown: '#db2777', borderUp: '#7c3aed', borderDown: '#db2777' },
+};
+
+// ---------------------------------------------------------------------------- Wirtschaftstermine (USA)
+// Quellen: BLS-Veröffentlichungskalender (CPI, PPI, Employment Situation – jeweils 08:30 New York) und
+// Federal Reserve (FOMC-Zinsentscheid am 2. Sitzungstag, 14:00 New York; Kalender 2027 überarbeitet am 12.11.2026,
+// Oktober 2027 ohne Zinsentscheid). Stand: November 2026 – neue Jahre hier ergänzen.
+export const ECON_EVENTS = {
+  fomc: { name: 'FOMC', at: [14, 0], days: [
+    '2025-01-29', '2025-03-19', '2025-05-07', '2025-06-18', '2025-07-30', '2025-09-17', '2025-10-29', '2025-12-10',
+    '2026-01-28', '2026-03-18', '2026-04-29', '2026-06-17', '2026-07-29', '2026-09-16', '2026-10-28', '2026-12-09',
+    '2027-01-27', '2027-03-17', '2027-04-28', '2027-06-09', '2027-07-28', '2027-09-15', '2027-11-17', '2028-01-26'] },
+  cpi: { name: 'CPI', at: [8, 30], days: [
+    '2026-01-13', '2026-02-13', '2026-03-11', '2026-04-10', '2026-05-12', '2026-06-10', '2026-07-14', '2026-08-12', '2026-09-11', '2026-10-14', '2026-11-10', '2026-12-10',
+    '2027-01-13', '2027-02-11', '2027-03-10', '2027-04-13', '2027-05-12', '2027-06-10', '2027-07-14', '2027-08-11', '2027-09-14', '2027-10-14', '2027-11-10', '2027-12-10'] },
+  ppi: { name: 'PPI', at: [8, 30], days: [
+    '2026-01-14', '2026-01-30', '2026-02-27', '2026-03-18', '2026-04-14', '2026-05-13', '2026-06-11', '2026-07-15', '2026-08-13', '2026-09-10', '2026-10-15', '2026-11-13', '2026-12-15',
+    '2027-01-14', '2027-02-12', '2027-03-12', '2027-04-14', '2027-05-13', '2027-06-11', '2027-07-15', '2027-08-10', '2027-09-10', '2027-10-15', '2027-11-12', '2027-12-15'] },
+  nfp: { name: 'NFP', at: [8, 30], days: [
+    '2026-01-09', '2026-02-11', '2026-03-06', '2026-04-03', '2026-05-08', '2026-06-05', '2026-07-02', '2026-08-07', '2026-09-04', '2026-10-02', '2026-11-06', '2026-12-04',
+    '2027-01-08', '2027-02-05', '2027-03-05', '2027-04-02', '2027-05-07', '2027-06-04', '2027-07-02', '2027-08-06', '2027-09-03', '2027-10-08', '2027-11-05', '2027-12-03'] },
 };
