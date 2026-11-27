@@ -1,6 +1,6 @@
 // Zeichenwerkzeuge wie in TradingView: Trendlinie, Strahl, horizontale Linie/Strahl, vertikale Linie,
 // Rechteck, Fibonacci, Preisspanne (Messen), Text, Long-/Short-Position. Speicherung je Coin im Browser.
-import { storage, floorIndex, tfMs, fmtPct, fmtDateTime, rgba, uid, nf, fmtCompact, lowerBound, niceStep } from '../util.js';
+import { storage, floorIndex, tfMs, fmtPct, fmtDateTime, rgba, uid, nf, fmtCompact, lowerBound, niceStep, cssColor, splitColor, joinColor } from '../util.js';
 import { rangeProfile, autoRows } from '../calc/vprofile.js';
 import { valueArea } from '../calc/profile.js';
 import { drawProfile } from './vpdraw.js';
@@ -17,6 +17,14 @@ const FIB = [[0, '#787b86'], [0.236, '#f23645'], [0.382, '#ff9800'], [0.5, '#4ca
 export const COLORS = ['#2962ff', '#e91e63', '#7c3aed', '#f0a93b', '#26a69a', '#ef5350', '#131722', '#ffffff'];
 /** Linien-Zeichnungen: Strichart, Beschriftung und Verlängern einstellbar (Rechtsklick → Einstellungen). */
 export const LINE_TYPES = new Set(['trend', 'ray', 'hline', 'hray', 'vline', 'rect']);
+/** Stil-Eigenschaften, die eine Vorlage speichert (wie TradingView „Vorlage“): keine Preise, kein Text. */
+export const STYLE_KEYS = {
+  trend: ['color', 'width', 'dash', 'ext', 'extL'], ray: ['color', 'width', 'dash', 'extL'],
+  hline: ['color', 'width', 'dash', 'axis'], hray: ['color', 'width', 'dash', 'axis'], vline: ['color', 'width', 'dash'],
+  rect: ['color', 'width', 'dash', 'bgOn', 'bg'], fib: ['color', 'ext'], text: ['color', 'fs', 'bgOn', 'bg', 'bdOn', 'bd'],
+  avwap: ['color', 'width', 'src', 'bands'], alert: ['color', 'width', 'cond'], ftpo: ['color', 'mode', 'block', 'vaPct', 'clip'], fvp: ['color', 'mode', 'rows', 'wf'],
+  measure: [], long: [], short: [],
+};
 const dashOf = (d, hr) => (d === 'dashed' ? [6 * hr, 4 * hr] : d === 'dotted' ? [1.5 * hr, 3 * hr] : []);
 
 export class Drawings {
@@ -279,6 +287,9 @@ export class Drawings {
       if (!txt) { this.setTool('cursor'); return null; }
       base.text = txt; base.color = this.app.theme.dark ? '#e8e6e1' : '#131722';
     }
+    // eigener Standard für dieses Werkzeug (Einstellungen → Vorlage → „Als Standard speichern“)
+    const def = this.app.state.drawDefaults?.[type];
+    if (def) for (const k of STYLE_KEYS[type] || []) if (def[k] !== undefined) base[k] = JSON.parse(JSON.stringify(def[k]));
     if (type === 'long' || type === 'short') {
       const r = Math.abs(pt.p) * 0.006;
       const sgn = type === 'long' ? 1 : -1;
@@ -409,7 +420,7 @@ export class Drawings {
     if (this.app.state.drawHide) return out;
     for (const it of this.items) {
       if (it.type === 'avwap') { const r = this._avwap(it); if (r && r.v.length) add(r.v[r.v.length - 1], it.color); continue; }
-      if (it.type === 'hline' || it.type === 'hray') { if (it.axis !== false) add(it.pts[0].p, it.color); }
+      if (it.type === 'hline' || it.type === 'hray') { if (it.axis !== false) add(it.pts[0].p, splitColor(it.color).hex); }
       else if (it.type === 'alert') add(it.pts[0].p, it.fired ? '#787b86' : (this.app.theme.dark ? '#5d606b' : '#131722'));
       else if (it === this.sel && it.type === 'ftpo') {
         const p = this._ftpo(it);
@@ -420,7 +431,7 @@ export class Drawings {
         if (p) { add(p.poc, '#f0961e'); add(p.vah, '#5b7fe0'); add(p.val, '#5b7fe0'); }
       } else if (it === this.sel) {
         if (it.type === 'long' || it.type === 'short') { add(it.pts[0].p, '#2962ff'); add(it.stop, '#ef5350'); add(it.target, '#26a69a'); }
-        else if (it.type !== 'vline' && it.type !== 'text') { add(it.pts[0].p, it.color); add(it.pts[1].p, it.color); }
+        else if (it.type !== 'vline' && it.type !== 'text') { add(it.pts[0].p, splitColor(it.color || '#2962ff').hex); add(it.pts[1].p, splitColor(it.color || '#2962ff').hex); }
       }
     }
     return out;
@@ -479,7 +490,7 @@ export class Drawings {
         const g = this._geom(it);
         if (g.y1 == null && it.type !== 'vline') continue;
         const sel = it === this.sel || it === this.pending;
-        const col = it.color || '#2962ff';
+        const col = cssColor(it.color || '#2962ff');
         ctx.lineWidth = Math.max(1, (it.width || 1) * hr * (sel ? 1 : 0.85));
         ctx.strokeStyle = col; ctx.fillStyle = col;
         ctx.setLineDash(LINE_TYPES.has(it.type) ? dashOf(it.dash, hr) : []);
@@ -518,8 +529,11 @@ export class Drawings {
           }
           case 'rect': {
             if (g.x1 == null || g.x2 == null) break;
-            ctx.fillStyle = rgba(col, it.fillA ?? 0.14);
-            ctx.fillRect(X(Math.min(g.x1, g.x2)), Y(Math.min(g.y1, g.y2)), X(Math.abs(g.x2 - g.x1)), Y(Math.abs(g.y2 - g.y1)));
+            // innen: Hintergrund (eigene Farbe mit Deckkraft), außen: Rand (Linienfarbe, -breite, -art)
+            if (it.bgOn !== false) {
+              ctx.fillStyle = it.bg ? cssColor(it.bg) : rgba(it.color || '#2962ff', it.fillA ?? 0.14);
+              ctx.fillRect(X(Math.min(g.x1, g.x2)), Y(Math.min(g.y1, g.y2)), X(Math.abs(g.x2 - g.x1)), Y(Math.abs(g.y2 - g.y1)));
+            }
             ctx.strokeRect(X(Math.min(g.x1, g.x2)), Y(Math.min(g.y1, g.y2)), X(Math.abs(g.x2 - g.x1)), Y(Math.abs(g.y2 - g.y1)));
             handles.push([g.x1, g.y1], [g.x2, g.y2]);
             break;
@@ -702,6 +716,12 @@ export class Drawings {
             if (g.x1 == null) break;
             const fs = it.fs || 13;
             ctx.font = font(fs, 600); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+            if (it.bgOn || it.bdOn) {
+              const tw = ctx.measureText(it.text || '').width, pad = 5 * hr, bh = fs * 1.6 * vr;
+              roundRect(ctx, X(g.x1) - pad, Y(g.y1) - bh / 2, tw + 2 * pad, bh, 3 * hr);
+              if (it.bgOn) { ctx.fillStyle = cssColor(it.bg || '#f0f3fa'); ctx.fill(); }
+              if (it.bdOn) { ctx.strokeStyle = cssColor(it.bd || '#787b86'); ctx.lineWidth = Math.max(1, hr); ctx.stroke(); }
+            }
             ctx.fillStyle = col; ctx.fillText(it.text || '', X(g.x1), Y(g.y1));
             if (sel) { const w = ctx.measureText(it.text || '').width; ctx.strokeStyle = rgba('#2962ff', 0.8); ctx.strokeRect(X(g.x1) - 3 * hr, Y(g.y1) - (fs * 0.75) * vr, w + 6 * hr, fs * 1.5 * vr); }
             break;

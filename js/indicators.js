@@ -47,6 +47,7 @@ const vwap = {
   defaults: {
     period: 'day', source: 'ohlc4', feed: '', line: true, b1: true, b2: true, b3: true, b4: true, m1: 1, m2: 2, m3: 3, m4: 4,
     zones: true, zoneColor: '#787b861f', outer: false, outerColor: '#787b860d', prev: false,
+    pbox: true, pboxFill: '#787b8618', pboxLine: '#787b86', pboxLabels: false, pboxDays: 30,
     labels: true, lineLabel: true, axis: true,
     color: INK, c1: '#131722bf', c2: '#787b86cc', c3: '#787b86cc', c4: '#787b86cc', width: 1, bw: 1,
   },
@@ -59,7 +60,12 @@ const vwap = {
     { k: 'm2', label: 'Multiplikator Band 2', t: 'num', min: 0, max: 20, step: 0.1 },
     { k: 'm3', label: 'Multiplikator Band 3', t: 'num', min: 0, max: 20, step: 0.1 },
     { k: 'm4', label: 'Multiplikator Band 4', t: 'num', min: 0, max: 20, step: 0.1 },
-    { k: 'prev', label: 'Vorperiode: pVWAP / pVAH / pVAL', t: 'bool' },
+    { k: 'prev', label: 'Vorperiode: pVWAP / pVAH / pVAL als Linien', t: 'bool' },
+    { sec: 'Vortag als Box (VAH / VWAP / VAL) wie TradingView' },
+    { k: 'pbox', label: 'Box der Vorperiode über jede Periode', t: 'bool', color: 'pboxFill' },
+    { k: 'pboxLine', label: 'Linien VAH / VWAP / VAL (gepunktet)', t: 'color', offIf: ['pbox', false] },
+    { k: 'pboxLabels', label: 'Namen an der Box (pVAH, pVWAP, pVAL)', t: 'bool', offIf: ['pbox', false] },
+    { k: 'pboxDays', label: 'Wie viele Perioden zurück', t: 'int', min: 1, max: 1000, offIf: ['pbox', false] },
     { sec: 'Linien', tab: 'style' },
     { k: 'line', label: 'VWAP', t: 'bool', color: 'color', width: 'width' },
     { k: 'b1', label: 'Band 1 (VAH / VAL)', t: 'bool', color: 'c1', width: 'bw' },
@@ -131,6 +137,23 @@ const vwap = {
     if (s.line) {
       sc.line(d.vwap, { color: rgba(s.color), width: s.width, breaks: br, label: s.lineLabel ? 'VWAP' : null, lc: vwapHex });
       if (s.axis) sc.axisLabel(d.vwap[last], null, pinkBg, pinkFg);
+    }
+    if (s.pbox && d.prev.length) {
+      // wie „Time-Based Daily Bands“ in TradingView: über jedem Tag eine Box von VAL bis VAH des Vortags, gepunktet VAH / VWAP / VAL
+      const n = d.prev.length, cur = periodStart(c.now, s.period, c.offset);
+      const startOf = (j) => (j < n ? d.prev[j].start : j === n ? cur : null);
+      const endT = c.bars[last].t + c.tfMs;
+      const lc = rgba(s.pboxLine);
+      for (let k = Math.max(0, n - (s.pboxDays || 30)); k < n; k++) {
+        const p = d.prev[k], from = startOf(k + 1);
+        if (from == null || from > endT) continue;
+        const to = startOf(k + 2) ?? endT;
+        const hi = p.vwap + s.m1 * p.sd, lo = p.vwap - s.m1 * p.sd;
+        sc.box({ from, to, top: hi, bottom: lo, fill: rgba(s.pboxFill) });
+        sc.level({ p: hi, from, to, color: lc, dash: 'dotted', label: s.pboxLabels ? 'pVAH' : null, lc: splitColor(s.pboxLine).hex });
+        sc.level({ p: p.vwap, from, to, color: lc, dash: 'dotted', label: s.pboxLabels ? 'pVWAP' : null, lc: splitColor(s.pboxLine).hex });
+        sc.level({ p: lo, from, to, color: lc, dash: 'dotted', label: s.pboxLabels ? 'pVAL' : null, lc: splitColor(s.pboxLine).hex });
+      }
     }
     if (s.prev && d.prev.length) {
       const p = d.prev[d.prev.length - 1];
@@ -209,74 +232,125 @@ const rvwap = {
 };
 
 // ============================================================================ TQI: High Volume Bars
+const HVB_TF = [['chart', 'Chart-Zeiteinheit (wie TradingView)'], [1, '1 Min.'], [3, '3 Min.'], [5, '5 Min.'], [15, '15 Min.'], [30, '30 Min.'], [60, '1 Std.'], [240, '4 Std.']];
+/** Level einer High Volume Bar nach rechts verfolgen: Ende bei der ersten Berührung (optional erst, nachdem der Preis
+ *  das Level verlassen hat), sonst nach maxAge Kerzen entfernen. Gibt { end: Zeit | null, gone: bool } zurück. */
+function hvbTrack(bars, i0, lo, hi, { touchLeft, maxAge, remove }) {
+  let left = !touchLeft;
+  for (let j = i0 + 1; j < bars.length; j++) {
+    const b = bars[j], inside = b.l <= hi && b.h >= lo;
+    if (!left) { if (!inside) left = true; continue; }
+    if (inside) return { end: b.t, gone: false };
+  }
+  return { end: null, gone: remove && bars.length - 1 - i0 > maxAge };
+}
 const hvb = {
   type: 'hvb', name: 'High Volume Bars', cat: 'tqi', pane: 'main',
-  desc: 'Kerzen (15 Min.) mit Volumen-Z-Score ≥ 2,5 über 144 Kerzen. POC und Value Area der Kerze aus 1-Minuten-Daten.',
-  defaults: { tfMin: 15, length: 144, threshold: 2.5, confirm: false, profile: '1m', rows: 100, vaPct: 68, pocLine: true, vaLines: false, vaFill: true, delta: false, pocLife: 200, vaLife: 200, maxActive: 100, mark: true, pocColor: POC, vaColor: '#787b86', vaOpacity: 0.24 },
+  desc: 'Wie „High Volume Bars w3v“ in TradingView: Kerzen mit Volumen-Z-Score ≥ 2,5 über 144 Kerzen werden eingefärbt (steigend blau, fallend rosa). POC und Value Area der Kerze aus 1-Minuten-Daten; die Level laufen nach rechts, bis der Preis sie berührt.',
+  defaults: {
+    tfMin: 'chart', threshold: 2.5, length: 144, confirm: false, startOn: false, startDate: '2024-12-01', startTime: '02:00',
+    mark: true, bull: '#90bff9', bear: '#faa1a4',
+    pocLine: true, pocColor: '#00bcd4', pocStyle: 'dotted', pocWidth: 1, vaLines: false, vahColor: '#5d606b', valColor: '#5d606b',
+    vaFill: true, vaColor: '#787b8633', vaPct: 68, removeOn: true, pocLife: 200, vaLife: 200,
+    deltaShow: 'off', deltaPos: '#089981', deltaNeg: '#f23645', deltaSize: 'small',
+    alerts: false, alertWhen: 'close',
+    profile: '1m', rows: 100, maxActive: 100, touchLeft: true,
+  },
   schema: [
-    { sec: 'Erkennung' },
-    { k: 'tfMin', label: 'Zeiteinheit (Minuten)', t: 'select', opts: [[1, '1'], [3, '3'], [5, '5'], [15, '15'], [30, '30'], [60, '60'], [240, '240']] },
-    { k: 'length', label: 'Z-Score Länge', t: 'int', min: 2, max: 5000 },
-    { k: 'threshold', label: 'Z-Score Schwelle', t: 'num', min: 0, max: 100, step: 0.1 },
-    { k: 'confirm', label: 'Erst nach Kerzenschluss', t: 'bool' },
-    { sec: 'Profil der Kerze' },
-    { k: 'profile', label: 'Profil aus', t: 'select', opts: [['1m', '1-Minuten-Kerzen'], ['even', 'Kerze gleichmäßig verteilt']] },
-    { k: 'rows', label: 'Zeilen pro Kerze', t: 'int', min: 5, max: 1000 },
+    { sec: '1 · Signal' },
+    { k: 'threshold', label: 'Volumen-Schwelle (Z-Score)', t: 'num', min: 0, max: 100, step: 0.1 },
+    { k: 'length', label: 'Vergleich mit letzten N Kerzen', t: 'int', min: 2, max: 5000 },
+    { k: 'confirm', label: 'Signal erst nach Kerzenschluss', t: 'bool' },
+    { k: 'startOn', label: 'Erst ab Datum', t: 'bool' },
+    { k: 'startDate', label: 'Datum', t: 'date', offIf: ['startOn', false] },
+    { k: 'startTime', label: 'Uhrzeit (z. B. 02:00)', t: 'text', offIf: ['startOn', false] },
+    { k: 'mark', label: 'Kerzen färben', t: 'bool' },
+    { k: 'bull', label: 'Steigende Kerze', t: 'color', offIf: ['mark', false] },
+    { k: 'bear', label: 'Fallende Kerze', t: 'color', offIf: ['mark', false] },
+    { k: 'tfMin', label: 'Zeiteinheit', t: 'select', opts: HVB_TF },
+    { sec: '2 · Level' },
+    { k: 'pocLine', label: 'POC', t: 'bool', color: 'pocColor' },
+    { k: 'pocStyle', label: 'POC Linienart', t: 'select', opts: [['dotted', 'gepunktet'], ['dashed', 'gestrichelt'], ['solid', 'durchgezogen']], offIf: ['pocLine', false] },
+    { k: 'pocWidth', label: 'POC Linienbreite', t: 'int', min: 1, max: 4, offIf: ['pocLine', false] },
+    { k: 'vaLines', label: 'VAH / VAL Linien', t: 'bool', color: 'vahColor' },
+    { k: 'valColor', label: 'Farbe VAL', t: 'color', offIf: ['vaLines', false] },
+    { k: 'vaFill', label: 'Value Area füllen', t: 'bool', color: 'vaColor' },
     { k: 'vaPct', label: 'Value Area %', t: 'num', min: 1, max: 100, step: 1 },
-    { sec: 'Darstellung' },
-    { k: 'pocLine', label: 'POC-Linie', t: 'bool' },
-    { k: 'vaLines', label: 'VAH / VAL Linien', t: 'bool' },
-    { k: 'vaFill', label: 'Value Area füllen', t: 'bool' },
-    { k: 'delta', label: 'Delta anzeigen', t: 'bool' },
-    { k: 'mark', label: 'Kerze markieren', t: 'bool' },
-    { k: 'pocLife', label: 'POC-Linie Länge (Kerzen der HVB-Zeiteinheit)', t: 'int', min: 1, max: 100000 },
-    { k: 'vaLife', label: 'Value Area Länge (Kerzen der HVB-Zeiteinheit)', t: 'int', min: 1, max: 100000 },
+    { k: 'removeOn', label: 'Unberührte Level entfernen nach (Kerzen)', t: 'bool' },
+    { k: 'pocLife', label: 'POC nach … Kerzen', t: 'int', min: 1, max: 100000, offIf: ['removeOn', false] },
+    { k: 'vaLife', label: 'VA nach … Kerzen', t: 'int', min: 1, max: 100000, offIf: ['removeOn', false] },
+    { sec: '3 · Geschätztes Delta' },
+    { k: 'deltaShow', label: 'Anzeigen', t: 'select', opts: [['off', 'Aus'], ['label', 'Zahl an der Kerze']] },
+    { k: 'deltaPos', label: 'Positiv', t: 'color', offIf: ['deltaShow', 'off'] },
+    { k: 'deltaNeg', label: 'Negativ', t: 'color', offIf: ['deltaShow', 'off'] },
+    { k: 'deltaSize', label: 'Schriftgröße', t: 'select', opts: [['small', 'klein'], ['normal', 'normal'], ['large', 'groß']], offIf: ['deltaShow', 'off'] },
+    { sec: '4 · Alarme' },
+    { k: 'alerts', label: 'Alarm bei neuer High Volume Bar', t: 'bool' },
+    { k: 'alertWhen', label: 'Wann', t: 'select', opts: [['close', 'bei Kerzenschluss'], ['live', 'sofort (während der Kerze)']], offIf: ['alerts', false] },
+    { sec: '5 · Erweitert' },
+    { k: 'profile', label: 'Profil-Zeiteinheit', t: 'select', opts: [['1m', 'Automatisch (1 Min. bis 1-Std.-Kerzen)'], ['even', 'Kerze gleichmäßig verteilt']] },
+    { k: 'rows', label: 'Profil-Zeilen', t: 'int', min: 5, max: 1000 },
     { k: 'maxActive', label: 'Max. aktive Level', t: 'int', min: 1, max: 1000 },
-    { k: 'pocColor', label: 'Farbe POC', t: 'color' },
-    { k: 'vaColor', label: 'Farbe Value Area', t: 'color' },
-    { k: 'vaOpacity', label: 'Deckkraft Value Area', t: 'num', min: 0, max: 1, step: 0.02 },
+    { k: 'touchLeft', label: 'Berührung zählt erst, wenn der Preis das Level verlassen hat', t: 'bool' },
   ],
-  bucketTf(s) { return minutesToTf(+s.tfMin) || '15m'; },
-  title(s) { return `High Volume Bars ${s.tfMin} ${s.length} ${n2(s.threshold)}`; },
+  bucketTf(s, c) { return !s.tfMin || s.tfMin === 'chart' ? (c?.tf || '15m') : (minutesToTf(+s.tfMin) || '15m'); },
+  title(s) { return `High Volume Bars ${n2(s.threshold)} ${s.length}${s.tfMin && s.tfMin !== 'chart' ? ' · ' + s.tfMin + 'm' : ''}`; },
   needs(s, c) {
     const first = c.bars.length ? c.bars[0].t : c.now;
-    const tf = this.bucketTf(s);
-    const req = [{ tf, from: first - (s.length + 4) * tfMs(tf) }];
+    const tf = this.bucketTf(s, c);
+    const req = [];
+    if (tf !== c.tf) req.push({ tf, from: first - (s.length + 4) * tfMs(tf) });
     if (s.profile === '1m') req.push({ tf: '1m', count: 240 });
     return req;
   },
   compute(s, c) {
-    const tf = this.bucketTf(s);
-    const st = c.store(tf);
-    if (!st || !st.bars.length) return { list: [] };
+    const tf = this.bucketTf(s, c);
+    const bars = tf === c.tf ? c.bars : c.store(tf)?.bars;
+    if (!bars || !bars.length) return { list: [] };
     const first = c.bars.length ? c.bars[0].t : 0;
-    let list = detectHvb(st.bars, { length: s.length, threshold: s.threshold, confirm: s.confirm }).filter(h => h.t >= first);
+    let start = -Infinity;
+    if (s.startOn && s.startDate) { const t = new Date(`${s.startDate}T${/^\d{1,2}:\d{2}$/.test(s.startTime || '') ? s.startTime.padStart(5, '0') : '00:00'}`).getTime(); if (Number.isFinite(t)) start = t; }
+    let list = detectHvb(bars, { length: s.length, threshold: s.threshold, confirm: s.confirm }).filter(h => h.t >= first && h.t >= start);
     list = list.slice(-s.maxActive);
     const bMs = tfMs(tf);
     for (const h of list) {
       let fine = null;
-      if (s.profile === '1m') fine = c.fine(h.t, h.t + bMs, !h.finished);
+      // „Automatisch“ wie TradingView: 1 Minute bis 1-Std.-Kerzen, darüber gröber (weniger Daten)
+      const ltf = bMs <= 3600e3 ? '1m' : bMs <= 4 * 3600e3 ? '5m' : bMs <= 86400e3 ? '30m' : '4h';
+      if (s.profile === '1m') fine = bMs <= tfMs(ltf) ? [bars[h.i]] : c.fine(h.t, h.t + bMs, !h.finished, ltf);
       if (s.profile === 'even') fine = [{ t: h.t, o: h.o, h: h.h, l: h.l, c: h.c, v: h.v, bv: NaN }];
       h.prof = fine && fine.length ? hvbProfile(fine, h.l, h.h, { rows: s.rows, vaPct: s.vaPct }) : null;
+      if (!h.prof) continue;
+      // wie TradingView: Level laufen nach rechts bis zur ersten Berührung, unberührte verschwinden nach x Kerzen
+      const o = { touchLeft: s.touchLeft !== false, remove: !!s.removeOn };
+      h.poc = hvbTrack(bars, h.i, h.prof.poc, h.prof.poc, { ...o, maxAge: s.pocLife });
+      h.va = hvbTrack(bars, h.i, h.prof.val, h.prof.vah, { ...o, maxAge: s.vaLife });
     }
+    // Alarm bei neuer High Volume Bar (einmal je Kerze)
+    const lastH = list[list.length - 1];
+    if (s.alerts && lastH && (s.alertWhen === 'live' || lastH.finished) && lastH.t >= bars[bars.length - 2]?.t) c.hvbAlert?.(lastH, tf);
     return { list, tf };
   },
   draw(s, d, sc, c) {
+    const fs = { small: 10, normal: 12, large: 14 }[s.deltaSize] || 10;
     for (const h of d.list) {
       if (s.mark) {
-        const i = c.idx(h.t);
-        if (i != null) sc.barBox({ i, top: h.h, bottom: h.l, stroke: rgba(s.pocColor, 0.9) });
+        // Kerzenkörper einfärben wie in TradingView (Rand und Docht bleiben); kleinere Chart-Zeiteinheit: alle Kerzen darin
+        const i0 = c.idx(h.t);
+        if (i0 != null) {
+          const end = h.t + tfMs(d.tf);
+          for (let i = i0; i < c.bars.length && (i === i0 || c.bars[i].t < end); i++) sc.barColor({ t: c.bars[i].t, color: h.bull ? s.bull : s.bear, prio: 2 });
+        }
       }
       const p = h.prof;
       if (!p) continue;
-      const bMs = tfMs(d.tf);
-      const vaTo = h.t + s.vaLife * bMs, pocTo = h.t + s.pocLife * bMs;
-      if (s.vaFill) sc.box({ from: h.t, to: vaTo, top: p.vah, bottom: p.val, fill: rgba(s.vaColor, s.vaOpacity) });
-      if (s.vaLines) {
-        sc.level({ p: p.vah, from: h.t, to: vaTo, color: rgba(s.vaColor, 0.9) });
-        sc.level({ p: p.val, from: h.t, to: vaTo, color: rgba(s.vaColor, 0.9) });
+      if (s.vaFill && !h.va?.gone) sc.box({ from: h.t, to: h.va?.end ?? null, top: p.vah, bottom: p.val, fill: rgba(s.vaColor) });
+      if (s.vaLines && !h.va?.gone) {
+        sc.level({ p: p.vah, from: h.t, to: h.va?.end ?? null, color: rgba(s.vahColor) });
+        sc.level({ p: p.val, from: h.t, to: h.va?.end ?? null, color: rgba(s.valColor) });
       }
-      if (s.pocLine) sc.level({ p: p.poc, from: h.t, to: pocTo, color: s.pocColor, width: 1, label: s.delta && Number.isFinite(p.delta) ? `Δ ${nf(1).format(p.delta)}` : null });
+      if (s.pocLine && !h.poc?.gone) sc.level({ p: p.poc, from: h.t, to: h.poc?.end ?? null, color: rgba(s.pocColor), width: s.pocWidth || 1, dash: s.pocStyle === 'solid' ? null : (s.pocStyle || 'dotted') });
+      if (s.deltaShow === 'label' && Number.isFinite(p.delta)) sc.mark({ t: h.t, p: p.delta >= 0 ? h.h : h.l, shape: 'text', below: p.delta < 0, text: (p.delta >= 0 ? '+' : '−') + fmtShort(Math.abs(p.delta)), color: p.delta >= 0 ? s.deltaPos : s.deltaNeg, fs });
     }
   },
 };
@@ -951,25 +1025,24 @@ const inst = {
 
 // ============================================================================ TQI: Volumen-Kerzen
 const volcandles = {
-  type: 'volcandles', name: 'Volumen-Kerzen markieren', cat: 'tqi', pane: 'main',
-  desc: 'Kerzen mit sehr hohem Volumen (Z-Score gegen die letzten 200 Kerzen) markieren.',
-  defaults: { lookback: 200, sd: 3, sdExtreme: 5, onlyExtreme: false, color: INK2, extremeColor: INK, opacity: 0.3 },
+  type: 'volcandles', name: 'Volumen-Kerzen färben', cat: 'tqi', pane: 'main',
+  desc: 'Kerzen mit sehr hohem Volumen (Z-Score gegen die letzten 200 Kerzen) einfärben wie in TradingView: Körper, Rand und Docht in der Farbe.',
+  defaults: { lookback: 200, sd: 3, sdExtreme: 5, onlyExtreme: false, color: INK2, extremeColor: POC },
   schema: [
     { k: 'lookback', label: 'Vergleich mit letzten X Kerzen', t: 'int', min: 20, max: 5000 },
     { k: 'sd', label: 'Hoch ab x Standardabweichungen', t: 'num', min: 0, max: 100, step: 0.1 },
     { k: 'sdExtreme', label: 'Extrem ab x Standardabweichungen', t: 'num', min: 0, max: 100, step: 0.1 },
     { k: 'onlyExtreme', label: 'Nur extreme Kerzen', t: 'bool' },
+    { sec: 'Farben', tab: 'style' },
     { k: 'color', label: 'Farbe hoch', t: 'color' }, { k: 'extremeColor', label: 'Farbe extrem', t: 'color' },
-    { k: 'opacity', label: 'Deckkraft', t: 'num', min: 0, max: 1, step: 0.05 },
   ],
   title(s) { return `Volumen-Kerzen ${s.lookback} ${n2(s.sd)} ${n2(s.sdExtreme)}`; },
   needs() { return []; },
   compute(s, c) { return { list: volumeCandles(c.bars, s) }; },
-  draw(s, d, sc, c) {
+  draw(s, d, sc) {
     for (const x of d.list) {
       if (s.onlyExtreme && x.level < 2) continue;
-      const col = x.level === 2 ? s.extremeColor : s.color;
-      sc.barBox({ i: x.i, top: c.bars[x.i].h, bottom: c.bars[x.i].l, fill: rgba(col, s.opacity), wf: 1.4 });
+      sc.barColor({ t: x.t, color: x.level === 2 ? s.extremeColor : s.color, prio: 1 });
     }
   },
 };
@@ -1112,7 +1185,7 @@ export function btLocOk(loc, p, b) {
 const bigtrades = {
   type: 'bigtrades', name: 'Big Trades', cat: 'of', pane: 'main',
   desc: 'Große Marktorders als Kreise wie ATAS Big Trades (Cumulative Trades: alle Trades mit gleicher Zeit und Seite = eine Order). Auto-Filter Stark/Mittel/Schwach oder feste Mindestgröße in Coins. Live und rückwärts nachgeladen.',
-  defaults: { auto: true, intensity: 'strong', minVol: 25, maxVol: 0, loc: 'any', group: 'none', hours: 4, fixed: false, size: 7, minSize: 4, maxSize: 34, text: false, unit: 'coin', buy: INK2, sell: INK2, opacity: 0.45, border: true, maxBubbles: 1500 },
+  defaults: { auto: true, intensity: 'strong', minVol: 25, maxVol: 0, loc: 'any', group: 'none', hours: 4, fixed: false, size: 7, minSize: 4, maxSize: 34, text: false, unit: 'coin', buy: INK2 + '73', sell: INK2 + '73', bBuy: INK2 + 'f2', bSell: INK2 + 'f2', bw: 1, textColor: '#ffffff', maxBubbles: 1500 },
   schema: [
     { sec: 'Berechnung (Cumulative Trades)' },
     { k: 'auto', label: 'Auto-Filter', t: 'bool' },
@@ -1130,10 +1203,14 @@ const bigtrades = {
     { k: 'maxSize', label: 'Maximalgröße', t: 'num', min: 2, max: 80, step: 1, offIf: ['fixed', true] },
     { k: 'text', label: 'Volumen im Kreis anzeigen', t: 'bool' },
     { k: 'unit', label: 'Volumen in', t: 'select', opts: [['coin', 'Coins (wie ATAS)'], ['usd', 'USD']] },
-    { k: 'buy', label: 'Farbe Kauf', t: 'color' },
-    { k: 'sell', label: 'Farbe Verkauf', t: 'color' },
-    { k: 'opacity', label: 'Deckkraft', t: 'num', min: 0.05, max: 1, step: 0.05 },
-    { k: 'border', label: 'Rand', t: 'bool' },
+    { sec: 'Innen (Füllung)', tab: 'style' },
+    { k: 'buy', label: 'Füllung Kauf', t: 'color' },
+    { k: 'sell', label: 'Füllung Verkauf', t: 'color' },
+    { sec: 'Außen (Rand)', tab: 'style' },
+    { k: 'bBuy', label: 'Rand Kauf', t: 'color' },
+    { k: 'bSell', label: 'Rand Verkauf', t: 'color' },
+    { k: 'bw', label: 'Randbreite (0 = ohne)', t: 'num', min: 0, max: 6, step: 0.5 },
+    { k: 'textColor', label: 'Farbe Zahl', t: 'color' },
     { k: 'maxBubbles', label: 'Max. Kreise', t: 'int', min: 10, max: 10000 },
   ],
   title(s) { return 'Big Trades ' + (s.auto ? 'Auto ' + ({ strong: 'stark', medium: 'mittel', weak: 'schwach' }[s.intensity] || 'stark') : '≥ ' + fmtShort(s.minVol)); },
@@ -1166,8 +1243,7 @@ const bigtrades = {
     for (const x of d.list) {
       // Größe wie ATAS: abhängig vom Volumen im Verhältnis zur Mindestgröße (Fläche ~ Volumen), begrenzt durch Min/Max
       const r = s.fixed ? s.size : Math.max(lo, Math.min(hi, s.size * Math.sqrt(x.q / (d.thr || x.q))));
-      const col = x.buy ? s.buy : s.sell;
-      sc.bubble({ t: x.t, p: x.p, r, fill: rgba(col, s.opacity), stroke: s.border ? rgba(col, 0.95) : null, text: s.text ? fmtShort(s.unit === 'usd' ? x.usd : x.q) : null, tc: '#ffffff' });
+      sc.bubble({ t: x.t, p: x.p, r, fill: rgba(x.buy ? s.buy : s.sell), stroke: s.bw > 0 ? rgba(x.buy ? s.bBuy : s.bSell) : null, lw: s.bw, text: s.text ? fmtShort(s.unit === 'usd' ? x.usd : x.q) : null, tc: rgba(s.textColor || '#ffffff') });
     }
   },
 };

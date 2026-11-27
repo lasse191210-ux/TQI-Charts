@@ -1,7 +1,7 @@
 // Oberfläche: Toolbar, Zeichenleiste, Legende, Z-Tabelle, Panels rechts (Watchlist, Trades, Orderbuch),
 // Dialoge (Symbol, Indikatoren, Einstellungen), Handy-Leiste.
 import { ICON, TOOL_ICON, CHART_TYPES, coinBadge } from './icons.js';
-import { TOOLS, COLORS, LINE_TYPES } from './render/drawings.js';
+import { TOOLS, COLORS, LINE_TYPES, STYLE_KEYS } from './render/drawings.js';
 import { TYPES, REGISTRY, CATEGORIES } from './indicators.js';
 import { MARKETS } from './exchanges.js';
 import { APP, COINS, COIN_NAME, TEMPLATES, CANDLE_STYLES } from './config.js';
@@ -293,34 +293,54 @@ export class UI {
     this.ctxMenu(x, y, items);
   }
 
-  /** Einstellungen einer Zeichnung (wie TradingView: Stil, Text, Koordinaten). Änderungen sofort sichtbar. */
+  /** Einstellungen einer Zeichnung wie in TradingView: außen (Rand) und innen (Hintergrund) je Farbe mit Deckkraft,
+   *  Text, Koordinaten; unten „Vorlage“: als Standard für neue Zeichnungen speichern, eigene Vorlagen, Werkseinstellung. */
   openDrawingSettings(it) {
-    const a = this.app, d = a.drawings, ty = it.type;
+    const a = this.app, d = a.drawings, ty = it.type, st = a.state;
     const NAME = Object.fromEntries(TOOLS);
     const isLine = LINE_TYPES.has(ty), isPos = ty === 'long' || ty === 'short';
     const one = ['hline', 'hray', 'vline', 'text', 'avwap', 'alert'].includes(ty);
-    const cur = {
-      color: it.color || '#2962ff', width: it.width || 1, dash: it.dash || 'solid', label: it.label || '', fillA: it.fillA ?? 0.14,
-      ext: !!it.ext, extL: !!it.extL, axis: it.axis !== false, text: it.text || '', fs: it.fs || 13, locked: !!it.locked,
-      src: it.src || 'hlc3', bands: it.bands ?? 1, cond: it.cond || 'cross', note: it.note || '',
-      mode: it.mode || (ty === 'ftpo' ? 'letters' : 'volume'), block: it.block || '30m', vaPct: it.vaPct || 68, clip: !!it.clip, rows: it.rows || 0, wf: it.wf || 0.4,
-      p0: +(+it.pts[0].p).toFixed(a.priceDec), p1: +(+it.pts[1].p).toFixed(a.priceDec), stop: it.stop != null ? +(+it.stop).toFixed(a.priceDec) : 0, target: it.target != null ? +(+it.target).toFixed(a.priceDec) : 0,
+    const keys = STYLE_KEYS[ty] || [];
+    const FACTORY = {
+      color: ty === 'hline' || ty === 'hray' ? '#7c3aed' : ty === 'alert' || ty === 'ftpo' ? '#131722' : ty === 'text' ? (a.theme.dark ? '#e8e6e1' : '#131722') : '#2962ff',
+      width: ty === 'alert' || ty === 'ftpo' ? 1 : 2, dash: 'solid', ext: false, extL: false, axis: true, bgOn: ty !== 'text', bg: null,
+      fs: 13, bdOn: false, bd: '#787b86', src: 'hlc3', bands: 1, cond: 'cross', mode: ty === 'ftpo' ? 'letters' : 'volume', block: '30m', vaPct: 68, clip: false, rows: 0, wf: 0.4,
     };
+    const hexOf = (c) => splitColor(c || '#2962ff').hex;
+    const read = () => ({
+      color: it.color || FACTORY.color, width: it.width || 1, dash: it.dash || 'solid', label: it.label || '',
+      bgOn: ty === 'text' ? !!it.bgOn : it.bgOn !== false, bg: it.bg || (ty === 'text' ? (a.theme.dark ? '#2a2e39' : '#f0f3fa') : joinColor(hexOf(it.color), it.fillA ?? 0.14)),
+      ext: !!it.ext, extL: !!it.extL, axis: it.axis !== false, text: it.text || '', fs: it.fs || 13, bdOn: !!it.bdOn, bd: it.bd || '#787b86', locked: !!it.locked,
+      src: it.src || 'hlc3', bands: it.bands ?? 1, cond: it.cond || 'cross', note: it.note || '',
+      mode: it.mode || FACTORY.mode, block: it.block || '30m', vaPct: it.vaPct || 68, clip: !!it.clip, rows: it.rows || 0, wf: it.wf || 0.4,
+      p0: +(+it.pts[0].p).toFixed(a.priceDec), p1: +(+it.pts[1].p).toFixed(a.priceDec), stop: it.stop != null ? +(+it.stop).toFixed(a.priceDec) : 0, target: it.target != null ? +(+it.target).toFixed(a.priceDec) : 0,
+    });
+    let cur = read();
     const step = Math.pow(10, -a.priceDec);
-    const schema = [{ sec: 'Stil' }];
-    if (!isPos && ty !== 'measure') schema.push({ k: 'color', label: 'Farbe', t: 'color' });
-    if (isLine || ['avwap', 'alert'].includes(ty)) schema.push({ k: 'width', label: 'Linienbreite', t: 'width' });
-    if (isLine) schema.push({ k: 'dash', label: 'Linienart', t: 'select', opts: [['solid', 'durchgezogen'], ['dashed', 'gestrichelt'], ['dotted', 'gepunktet']] });
-    if (ty === 'rect') schema.push({ k: 'fillA', label: 'Füllung (Deckkraft)', t: 'num', min: 0, max: 1, step: 0.02 });
+    const schema = [];
+    // außen: Linie bzw. Rand
+    if (!isPos && ty !== 'measure') {
+      schema.push({ sec: ty === 'rect' ? 'Außen (Rand)' : ty === 'text' ? 'Text' : 'Linie' });
+      schema.push({ k: 'color', label: ty === 'rect' ? 'Farbe Rand' : 'Farbe', t: 'color' });
+      if (isLine || ['avwap', 'alert'].includes(ty)) schema.push({ k: 'width', label: ty === 'rect' ? 'Randbreite' : 'Linienbreite', t: 'width' });
+      if (isLine) schema.push({ k: 'dash', label: 'Linienart', t: 'select', opts: [['solid', 'durchgezogen'], ['dashed', 'gestrichelt'], ['dotted', 'gepunktet']] });
+    }
+    if (ty === 'text') schema.push({ k: 'text', label: 'Text', t: 'text' }, { k: 'fs', label: 'Schriftgröße', t: 'int', min: 8, max: 48 });
+    // innen: Hintergrund
+    if (ty === 'rect' || ty === 'text') {
+      schema.push({ sec: ty === 'rect' ? 'Innen (Hintergrund)' : 'Hintergrund und Rahmen' });
+      schema.push({ k: 'bgOn', label: 'Hintergrund', t: 'bool', color: 'bg' });
+      if (ty === 'text') schema.push({ k: 'bdOn', label: 'Rahmen', t: 'bool', color: 'bd' });
+    }
+    if (ty === 'trend' || ty === 'fib' || ty === 'ray' || ty === 'hline' || ty === 'hray' || isLine) schema.push({ sec: 'Weitere' });
     if (ty === 'trend' || ty === 'fib') schema.push({ k: 'ext', label: 'nach rechts verlängern', t: 'bool' });
     if (ty === 'trend' || ty === 'ray') schema.push({ k: 'extL', label: 'nach links verlängern', t: 'bool' });
     if (ty === 'hline' || ty === 'hray') schema.push({ k: 'axis', label: 'Preis auf der Skala zeigen', t: 'bool' });
     if (isLine) schema.push({ k: 'label', label: 'Beschriftung', t: 'text' });
-    if (ty === 'text') schema.push({ k: 'text', label: 'Text', t: 'text' }, { k: 'fs', label: 'Schriftgröße', t: 'int', min: 8, max: 48 });
-    if (ty === 'avwap') schema.push({ k: 'src', label: 'Quelle', t: 'select', opts: [['hlc3', 'HLC3'], ['ohlc4', 'OHLC4'], ['close', 'Close']] }, { k: 'bands', label: 'Bänder', t: 'select', opts: [[0, 'aus'], [1, '±1σ'], [2, '±1σ ±2σ'], [3, '±1σ ±2σ ±3σ']] });
-    if (ty === 'alert') schema.push({ k: 'cond', label: 'Bedingung', t: 'select', opts: ALERT_CONDS.map(c => [c[0], c[1]]) }, { k: 'note', label: 'Notiz', t: 'text' });
-    if (ty === 'ftpo') schema.push({ k: 'mode', label: 'Darstellung', t: 'select', opts: [['letters', 'Buchstaben'], ['blocks', 'Blöcke']] }, { k: 'block', label: 'Zeit pro Buchstabe', t: 'select', opts: [['5m', '5 Min.'], ['15m', '15 Min.'], ['30m', '30 Min.'], ['1h', '1 Std.']] }, { k: 'vaPct', label: 'Value Area %', t: 'select', opts: [[68, '68 %'], [70, '70 %'], [80, '80 %']] }, { k: 'clip', label: 'Nur im gezogenen Preisbereich zählen', t: 'bool' });
-    if (ty === 'fvp') schema.push({ k: 'mode', label: 'Anzeige', t: 'select', opts: [['volume', 'Volumen'], ['bidask', 'Kauf / Verkauf'], ['delta', 'Delta']] }, { k: 'rows', label: 'Zeilenhöhe (0 = automatisch)', t: 'num', min: 0, max: 1e6, step }, { k: 'wf', label: 'Breite des Profils', t: 'num', min: 0.1, max: 1, step: 0.05 });
+    if (ty === 'avwap') schema.push({ sec: 'Anchored VWAP' }, { k: 'src', label: 'Quelle', t: 'select', opts: [['hlc3', 'HLC3'], ['ohlc4', 'OHLC4'], ['close', 'Close']] }, { k: 'bands', label: 'Bänder', t: 'select', opts: [[0, 'aus'], [1, '±1σ'], [2, '±1σ ±2σ'], [3, '±1σ ±2σ ±3σ']] });
+    if (ty === 'alert') schema.push({ sec: 'Alarm' }, { k: 'cond', label: 'Bedingung', t: 'select', opts: ALERT_CONDS.map(c => [c[0], c[1]]) }, { k: 'note', label: 'Notiz', t: 'text' });
+    if (ty === 'ftpo') schema.push({ sec: 'TPO' }, { k: 'mode', label: 'Darstellung', t: 'select', opts: [['letters', 'Buchstaben'], ['blocks', 'Blöcke']] }, { k: 'block', label: 'Zeit pro Buchstabe', t: 'select', opts: [['5m', '5 Min.'], ['15m', '15 Min.'], ['30m', '30 Min.'], ['1h', '1 Std.']] }, { k: 'vaPct', label: 'Value Area %', t: 'select', opts: [[68, '68 %'], [70, '70 %'], [80, '80 %']] }, { k: 'clip', label: 'Nur im gezogenen Preisbereich zählen', t: 'bool' });
+    if (ty === 'fvp') schema.push({ sec: 'Volume Profile' }, { k: 'mode', label: 'Anzeige', t: 'select', opts: [['volume', 'Volumen'], ['bidask', 'Kauf / Verkauf'], ['delta', 'Delta']] }, { k: 'rows', label: 'Zeilenhöhe (0 = automatisch)', t: 'num', min: 0, max: 1e6, step }, { k: 'wf', label: 'Breite des Profils', t: 'num', min: 0.1, max: 1, step: 0.05 });
     if (ty !== 'measure') {
       schema.push({ sec: 'Koordinaten' });
       if (isPos) schema.push({ k: 'p0', label: 'Entry', t: 'num', step, min: 0 }, { k: 'stop', label: 'Stop', t: 'num', step, min: 0 }, { k: 'target', label: 'Ziel', t: 'num', step, min: 0 });
@@ -329,25 +349,59 @@ export class UI {
     }
     schema.push({ sec: 'Sonstiges' }, { k: 'locked', label: 'Sperren (nicht verschiebbar)', t: 'bool' });
     const body = el(`<div class="setdlg"><div class="form" id="dsForm">${formHtml(schema, cur)}</div>
-      <div class="dlg-foot"><button class="tb danger" id="dsDel">${ICON.trash}<span>Löschen</span></button><button class="tb" id="dsClone">${ICON.copy}<span>Klonen</span></button><div class="grow"></div><button class="tb primary" id="dsOk">Fertig</button></div></div>`);
+      <div class="dlg-foot">${keys.length ? `<div class="dd-wrap"><button class="tb" id="dsTpl">Vorlage ${ICON.chev}</button></div>` : ''}<button class="tb icon danger" id="dsDel" title="Löschen">${ICON.trash}</button><button class="tb icon" id="dsClone" title="Klonen">${ICON.copy}</button><div class="grow"></div><button class="tb primary" id="dsOk">Ok</button></div></div>`);
     const close = this.modal(NAME[ty] || 'Zeichnung', body);
+    const has = (k) => schema.some(f => f.k === k || f.color === k);
     const apply = () => {
-      const has = (k) => schema.some(f => f.k === k);
-      for (const k of ['color', 'width', 'dash', 'fillA', 'ext', 'extL', 'axis', 'fs', 'locked', 'src', 'cond', 'mode', 'block', 'clip', 'rows', 'wf']) if (has(k)) it[k] = cur[k];
+      for (const k of ['color', 'width', 'dash', 'ext', 'extL', 'axis', 'fs', 'locked', 'src', 'cond', 'mode', 'block', 'clip', 'rows', 'wf', 'bgOn', 'bg', 'bdOn', 'bd']) if (has(k)) it[k] = cur[k];
       if (has('bands')) it.bands = +cur.bands;
       if (has('vaPct')) it.vaPct = +cur.vaPct;
       if (has('label')) it.label = String(cur.label || '').trim();
       if (has('note')) it.note = String(cur.note || '').trim();
       if (has('text') && String(cur.text).trim()) it.text = String(cur.text).trim();
-      if (has('p0') && cur.p0 > 0) { const dp = cur.p0 - it.pts[0].p; it.pts[0].p = cur.p0; if (one || isPos) it.pts[1].p = cur.p0; if (isPos && !has('stop')) { it.stop += dp; it.target += dp; } }
+      if (has('p0') && cur.p0 > 0) { it.pts[0].p = cur.p0; if (one || isPos) it.pts[1].p = cur.p0; }
       if (has('p1') && cur.p1 > 0) it.pts[1].p = cur.p1;
       if (has('stop') && cur.stop > 0) it.stop = cur.stop;
       if (has('target') && cur.target > 0) it.target = cur.target;
       if (ty === 'alert') it.fired = null;
+      delete it.fillA;
       d._changed();
       if (ty === 'ftpo') a.ensureNeeds();
     };
+    const rerender = () => { $('#dsForm', body).innerHTML = formHtml(schema, cur); this.bindForm($('#dsForm', body), cur, (imm) => { if (imm) apply(); }); };
     this.bindForm($('#dsForm', body), cur, (imm) => { if (imm) apply(); });
+    // Stil übernehmen (Vorlage / Standard / Werkseinstellung)
+    const useStyle = (props) => { for (const k of keys) if (props[k] !== undefined) it[k] = deepClone(props[k]); if (keys.includes('bg') && props.bg === null) delete it.bg; delete it.fillA; d._changed(); cur = read(); rerender(); };
+    const styleNow = () => { apply(); const o = {}; for (const k of keys) if (it[k] !== undefined) o[k] = deepClone(it[k]); return o; };
+    $('#dsTpl', body)?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const list = (st.drawTpls?.[ty] || []);
+      const def = st.drawDefaults?.[ty];
+      const menu = el(`<div class="dd-menu up">
+        <button data-v="def">Als Standard für neue „${esc(NAME[ty] || ty)}“ speichern</button>
+        <button data-v="save">Als Vorlage speichern …</button>
+        ${list.length ? '<div class="dd-sep"></div>' + list.map((t, i) => `<div class="dd-row"><button data-v="use" data-i="${i}">${esc(t.name)}</button><button class="dd-x" data-v="del" data-i="${i}" title="Vorlage löschen">✕</button></div>`).join('') : ''}
+        <div class="dd-sep"></div>
+        ${def ? '<button data-v="apply">Standard anwenden</button>' : ''}
+        <button data-v="factory">Werkseinstellung${def ? ' (eigenen Standard löschen)' : ''}</button></div>`);
+      const wrap = $('.dd-wrap', body);
+      $('.dd-menu', wrap)?.remove();
+      wrap.appendChild(menu);
+      const off = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', off, true); } };
+      setTimeout(() => document.addEventListener('pointerdown', off, true));
+      menu.onclick = (ev) => {
+        const b = ev.target.closest('[data-v]');
+        if (!b) return;
+        const v = b.dataset.v, i = +b.dataset.i;
+        if (v === 'def') { (st.drawDefaults ||= {})[ty] = styleNow(); a._save(); this.toast(`Neue „${NAME[ty]}“ sehen jetzt immer so aus`, 'info', 2500); }
+        if (v === 'save') { const n = prompt('Name der Vorlage', NAME[ty] || 'Vorlage'); if (n && n.trim()) { (st.drawTpls ||= {})[ty] = [...list.filter(t => t.name !== n.trim()), { name: n.trim(), props: styleNow() }]; a._save(); this.toast('Vorlage gespeichert: ' + n.trim(), 'info', 2000); } }
+        if (v === 'use' && list[i]) useStyle(list[i].props);
+        if (v === 'del' && list[i]) { st.drawTpls[ty] = list.filter((_, j) => j !== i); a._save(); }
+        if (v === 'apply' && def) useStyle(def);
+        if (v === 'factory') { if (st.drawDefaults) delete st.drawDefaults[ty]; a._save(); useStyle(FACTORY); }
+        menu.remove();
+      };
+    });
     $('#dsDel', body).onclick = () => { close(); d.remove(it); };
     $('#dsClone', body).onclick = () => { close(); d.clone(it); };
     $('#dsOk', body).onclick = () => { apply(); close(); };

@@ -64,7 +64,7 @@ export class App {
   /** Alte gespeicherte Stände anpassen (neue Farben, Session, Vorlagen). */
   migrate(saved) {
     const st = this.state;
-    if (!saved) { st.colorsV = 2; st.tplV = 2; st.btV = 2; return; }
+    if (!saved) { st.colorsV = 2; st.tplV = 2; st.btV = 3; st.paintV = 1; st.hvbV = 1; st.vwapV = 1; return; }
     if ((saved.tplV || 0) < 2) {
       // Standard-Vorlage = Einstellung vom PC (26.11.). War sie aus Versehen in „Nur Key Levels“ (2. Vorlage) gebaut,
       // wird sie von dort 1:1 in die Standard-Vorlage verschoben und „Nur Key Levels“ wieder auf Werkseinstellung gesetzt.
@@ -96,6 +96,37 @@ export class App {
       for (const l of [st.indicators || [], ...Object.values(st.tplState || {}), ...(st.userTpls || []).map(t => t.list || [])]) for (const ind of l) fix(ind);
       if (st.myDefaults?.bigtrades) delete st.myDefaults.bigtrades;
       st.btV = 2;
+    }
+    const allInds = () => [st.indicators || [], ...Object.values(st.tplState || {}), ...(st.userTpls || []).map(t => t.list || [])].flat().filter(Boolean);
+    if ((saved.btV || 0) < 3) {
+      // Big Trades: innen (Füllung) und außen (Rand) je eigene Farbe mit Deckkraft (Farbwähler wie TradingView)
+      for (const ind of allInds()) {
+        if (ind.type !== 'bigtrades' || !ind.s || ind.s.opacity == null) continue;
+        const b = U.splitColor(ind.s.buy || '#787b86'), v = U.splitColor(ind.s.sell || '#787b86');
+        Object.assign(ind.s, { buy: U.joinColor(b.hex, ind.s.opacity * b.a), sell: U.joinColor(v.hex, ind.s.opacity * v.a), bBuy: U.joinColor(b.hex, 0.95), bSell: U.joinColor(v.hex, 0.95), bw: ind.s.border === false ? 0 : 1 });
+        delete ind.s.opacity; delete ind.s.border;
+      }
+      st.btV = 3;
+    }
+    if ((saved.hvbV || 0) < 1) {
+      // High Volume Bars wie „High Volume Bars w3v“ in TradingView: Kerzen blau/rosa, POC türkis gepunktet, VA grau, Chart-Zeiteinheit
+      for (const ind of allInds()) {
+        if (ind.type !== 'hvb' || !ind.s) continue;
+        const o = ind.s, D = TYPES.hvb.defaults;
+        const va = U.splitColor(o.vaColor || '#787b86');
+        Object.assign(o, { tfMin: 'chart', bull: D.bull, bear: D.bear, pocColor: D.pocColor, pocStyle: 'dotted', pocWidth: 1, vaColor: U.joinColor(va.hex, o.vaOpacity ?? 0.2), deltaShow: o.delta ? 'label' : 'off', removeOn: true, touchLeft: true });
+        delete o.vaOpacity; delete o.delta; delete o.markColor;
+      }
+      st.hvbV = 1;
+    }
+    if ((saved.paintV || 0) < 1) {
+      // Volumen-Kerzen werden jetzt eingefärbt wie in TradingView (statt Kasten): Schwarz wäre von fallenden Kerzen nicht zu unterscheiden → POC-Pink
+      for (const ind of allInds()) {
+        if (ind.type !== 'volcandles' || !ind.s) continue;
+        if (!ind.s.extremeColor || /^#131722/i.test(ind.s.extremeColor)) ind.s.extremeColor = '#e91e63';
+        delete ind.s.opacity;
+      }
+      st.paintV = 1;
     }
     if ((saved.colorsV || 0) < 2) {
       // zweifarbig (Schwarz/Grau, POC pink): Farben der Indikatoren auf die neuen Standardwerte setzen
@@ -318,7 +349,32 @@ export class App {
     const t = this.state.chartType;
     if (t === 'tpo') return view.map(b => ({ time: b.t / 1000, o: b.o, h: b.h, l: b.l, c: b.c }));
     if (t === 'line' || t === 'area') return view.map(b => ({ time: b.t / 1000, value: b.c }));
+    // eingefärbte Kerzen (z. B. Volumen-Kerzen) wie TradingView barcolor(): Körper, Rand und Docht in der Farbe
+    const bc = this._barCols;
+    if (bc && bc.size) {
+      if (t === 'bars') return view.map(b => { const c = bc.get(b.t); return c ? { time: b.t / 1000, open: b.o, high: b.h, low: b.l, close: b.c, color: c } : { time: b.t / 1000, open: b.o, high: b.h, low: b.l, close: b.c }; });
+      return view.map(b => { const c = bc.get(b.t); return c ? { time: b.t / 1000, open: b.o, high: b.h, low: b.l, close: b.c, color: c } : { time: b.t / 1000, open: b.o, high: b.h, low: b.l, close: b.c }; });
+    }
     return view.map(b => ({ time: b.t / 1000, open: b.o, high: b.h, low: b.l, close: b.c }));
+  }
+  /** Kerzenfarben aus den Indikatoren übernehmen; neu zeichnen nur, wenn sich etwas geändert hat. */
+  applyBarColors(scene) {
+    const t = this.state.chartType;
+    const map = new Map();
+    // höhere Priorität gewinnt (High Volume Bars vor Volumen-Kerzen), bei Gleichstand der spätere Indikator
+    const pr = new Map();
+    if (t !== 'tpo' && t !== 'line' && t !== 'area') for (const x of scene.barColors || []) {
+      if (x.t == null || !x.color) continue;
+      const q = x.prio || 0;
+      if (pr.has(x.t) && pr.get(x.t) > q) continue;
+      pr.set(x.t, q); map.set(x.t, U.cssColor(x.color));
+    }
+    let sig = '';
+    for (const [k, v] of map) sig += k + v;
+    if (sig === this._barColSig) return;
+    this._barColSig = sig;
+    this._barCols = map;
+    if (this.view.length && this.series) this.series.setData(this.seriesData(this.view));
   }
   makeView() { return this.state.chartType === 'ha' ? heikinAshi(this.bars) : this.bars; }
 
@@ -332,6 +388,7 @@ export class App {
     this.ext = { oi: null, funding: null };
     this.liqList = []; this.tape = []; this.fine.clear(); this.fineQueue = [];
     this.data.clear();
+    this._barCols = null; this._barColSig = null; this._loadedAt = Date.now();
     this.alerts?.reset();
     this.tpoSel = null;
     this.trader?.onSymbol();
@@ -483,11 +540,12 @@ export class App {
       /** Beginn der aktuellen (bzw. letzten) Session. */
       sessStart: (t) => { const x = sess.last(t); return x ? x[0] : U.periodStart(t, 'day', this.offset); },
       idx: (t) => { if (!this.bars.length || t < this.bars[0].t) return null; return U.floorIndex(this.bars, t); },
-      fine: (t0, t1, live) => this.fineBars(t0, t1, live),
+      fine: (t0, t1, live, tf) => this.fineBars(t0, t1, live, tf),
       ext: (k) => this.ext[k],
       bigTrades: (min) => this.bt.active ? this.bt.orders(min > 0 ? min : this.autoBigUsd()) : [],
       autoBig: () => this.autoBigUsd(),
       avgMinVol: () => this.avgMinVol(),
+      hvbAlert: (h, tf) => this.hvbAlert(h, tf),
       btInfo: () => this.bt.info(),
       options: (cur, maxAge) => this.opt.get(cur, maxAge),
       liqs: () => this.liqList,
@@ -523,6 +581,20 @@ export class App {
     if (this.state.tpoRow > 0) return this.state.tpoRow;
     const d = this.hub.stores.get(`${this.state.market}|${this.state.base}|1D`);
     return d && d.bars.length ? autoRowSize(d.bars) : U.niceStep((this.bars[this.bars.length - 1]?.c || 100) * 0.0005);
+  }
+  /** High Volume Bars: Alarm einmal je neuer Kerze (Ton, Hinweis, Systembenachrichtigung wie bei Preis-Alarmen). */
+  hvbAlert(h, tf) {
+    const key = `${this.state.market}|${this.state.base}|${tf}|${h.t}`;
+    this._hvbSeen ||= new Set();
+    if (this._hvbSeen.has(key)) return;
+    const first = !this._hvbSeen.size;
+    this._hvbSeen.add(key);
+    if (first && Date.now() - this._loadedAt < 5000) return; // beim Laden keine alten Signale melden
+    const name = this.market.ticker(this.state.base);
+    const txt = `High Volume Bar ${name} ${tf}: ${h.bull ? 'steigend' : 'fallend'}, Z-Score ${U.nf(1).format(h.z)}`;
+    this.ui.toast('🔔 ' + txt, 'alert', 10000);
+    this.alerts?.beep();
+    try { if ('Notification' in window && Notification.permission === 'granted') new Notification('TQI Charts · High Volume Bar', { body: txt, tag: 'tqi-hvb-' + key }); } catch { /* egal */ }
   }
   /** Notwert, solange noch kein Durchschnittsvolumen bekannt ist (USD). */
   autoBigUsd() {
@@ -574,6 +646,7 @@ export class App {
       try { T.draw(ind.s, d, scene, ctx); } catch (e) { console.error(ind.type, e); }
     }
     if (this.isTpo && this.tpoView) this.updateTpo(scene, ctx);
+    this.applyBarColors(scene);
     // überzählige Panels entfernen
     for (const uid of [...this.panes.keys()]) if (!this.state.indicators.some(x => x.uid === uid)) this.removePane(uid);
     this.overlay.setScene(scene);
@@ -613,7 +686,7 @@ export class App {
     const pt = (v, i) => {
       const val = v.values[i], time = this.bars[i].t / 1000;
       if (!Number.isFinite(val)) return { time };
-      return v.colors ? { time, value: val, color: U.cssColor(v.colors[i]) } : { time, value: val };
+      return v.colors ? { time, value: val, color: U.cssColor(U.inkMap(v.colors[i], this.theme.dark)) } : { time, value: val };
     };
     for (const pl of T.plots) {
       const s = p.series[pl.key];
@@ -621,7 +694,7 @@ export class App {
       const vis = !!ind.visible && !!v;
       if (p.vis?.[pl.key] !== vis) { s.applyOptions({ visible: vis }); (p.vis ||= {})[pl.key] = vis; }
       if (!v) { if (p.lens[pl.key]) { s.setData([]); p.lens[pl.key] = 0; } continue; }
-      if (v.color && p.col?.[pl.key] !== v.color) { s.applyOptions({ color: U.cssColor(v.color) }); (p.col ||= {})[pl.key] = v.color; }
+      if (v.color && p.col?.[pl.key] !== v.color + this.theme.dark) { s.applyOptions({ color: U.cssColor(U.inkMap(v.color, this.theme.dark)) }); (p.col ||= {})[pl.key] = v.color + this.theme.dark; }
       const prevN = p.lens[pl.key] || 0;
       if (!this._forcePanes && p.firstT === firstT && prevN && n >= prevN && n - prevN <= 2) {
         // nur das Ende hat sich geändert (Live)
@@ -717,15 +790,17 @@ export class App {
     }
   }
 
-  fineBars(t0, t1, live) {
-    const st = this.hub.stores.get(`${this.state.market}|${this.state.base}|1m`);
+  /** Feinere Kerzen (Standard 1 Min.) für das Profil einer Kerze: aus dem geladenen Speicher oder einzeln nachladen. */
+  fineBars(t0, t1, live, tf = '1m') {
+    const st = this.hub.stores.get(`${this.state.market}|${this.state.base}|${tf}`);
     if (st && st.bars.length && st.bars[0].t <= t0) {
       const i = U.lowerBound(st.bars, t0);
       return st.bars.slice(i, U.lowerBound(st.bars, t1));
     }
-    const c = this.fine.get(t0);
+    const key = tf === '1m' ? t0 : `${tf}|${t0}`;
+    const c = this.fine.get(key);
     if (c && c !== 'pending') return c;
-    if (!c) { this.fine.set(t0, 'pending'); this.fineQueue.push([t0, t1]); this._pumpFine(); }
+    if (!c) { this.fine.set(key, 'pending'); this.fineQueue.push([t0, t1, tf, key]); this._pumpFine(); }
     return null;
   }
   async _pumpFine() {
@@ -735,12 +810,12 @@ export class App {
     try {
       while (this.fineQueue.length && seq === this.loadSeq) {
         const batch = this.fineQueue.splice(-2);
-        await Promise.all(batch.map(async ([t0, t1]) => {
+        await Promise.all(batch.map(async ([t0, t1, tf = '1m', key = t0]) => {
           try {
-            const n = Math.max(1, Math.round((t1 - t0) / U.MIN));
-            const bars = await fetchBars(this.state.market, this.state.base, '1m', { endTime: t1 - 1, count: n });
-            this.fine.set(t0, bars.filter(b => b.t >= t0 && b.t < t1));
-          } catch { this.fine.delete(t0); }
+            const n = Math.max(1, Math.round((t1 - t0) / U.tfMs(tf)));
+            const bars = await fetchBars(this.state.market, this.state.base, tf, { endTime: t1 - 1, count: n });
+            this.fine.set(key, bars.filter(b => b.t >= t0 && b.t < t1));
+          } catch { this.fine.delete(key); }
         }));
         this._recompute();
         await U.sleep(120);
@@ -881,6 +956,19 @@ export class App {
     const chartOf = (k) => (st.userTpls || []).find(t => t.id === k)?.chart || TEMPLATES[k]?.chart || null;
     if (chartOf(key) === 'tpo' && !this.isTpo) this.setChartType('tpo');
     else if (chartOf(prev) === 'tpo' && chartOf(key) !== 'tpo' && this.isTpo) this.toggleTpo();
+    // Vorlagen mit eigenem Aussehen (Übersichtlich hell / dunkel): Design, Kerzen schwarz/weiß, ohne Gitter
+    const T = TEMPLATES[key];
+    if (T?.theme || T?.look) {
+      if (T.theme) st.theme = T.theme;
+      if (T.look) {
+        st.candles = T.look.candles || st.candles;
+        const auto = { up: 'auto', down: 'auto', borderUp: 'auto', borderDown: 'auto', wickUp: 'auto', wickDown: 'auto', bg: 'auto', grid: 'auto', text: 'auto', crosshair: 'auto', border: 'auto' };
+        st.chartCol = { ...st.chartCol, ...auto, borderVis: true, gridV: !!T.look.grid, gridH: !!T.look.grid };
+      }
+      this._save();
+      this.applyTheme();
+      this.ui.renderAll();
+    }
   }
   /** Aktuelle Indikatoren als eigene Vorlage sichern (oder eine eigene Vorlage überschreiben). */
   saveUserTemplate(name, id = null) {

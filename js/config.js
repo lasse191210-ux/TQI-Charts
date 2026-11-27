@@ -1,5 +1,5 @@
 // Grundeinstellungen, Coins, Vorlagen und Farbthemen.
-export const APP = { name: 'TQI Charts', version: '1.3.0', key: 'tqi-charts:v1' };
+export const APP = { name: 'TQI Charts', version: '1.4.0', key: 'tqi-charts:v1' };
 
 export const COINS = [
   ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['SOL', 'Solana'], ['XRP', 'XRP'], ['BNB', 'BNB'], ['DOGE', 'Dogecoin'],
@@ -51,6 +51,28 @@ export const TEMPLATES = {
     ],
   },
   leer: { name: 'Nur Kerzen', desc: 'Keine Indikatoren', list: [] },
+  clean: {
+    name: 'Übersichtlich (hell)', theme: 'light', look: { candles: 'sw', grid: false },
+    desc: 'Nur das Wichtigste, ohne Gitter: VWAP-Tagesbänder ±1/±2σ mit Vortags-Box, Rolling VWAP 7/90/365, High Volume Bars wie TradingView, Key Levels (Vortag, Vorwoche, nPOC), Big Trades stark. Helles Design.',
+    list: [
+      { type: 'vwap', s: { period: 'day', b3: false, b4: false, outer: false, labels: false, axis: false } },
+      { type: 'rvwap', s: { axis: false } },
+      { type: 'hvb' },
+      { type: 'keylevels', s: { tails: false, singles: false, pq: false, py: false, w52l: false, w52h: false, dates: false } },
+      { type: 'bigtrades' },
+    ],
+  },
+  cleanDark: {
+    name: 'Übersichtlich (dunkel)', theme: 'dark', look: { candles: 'sw', grid: false },
+    desc: 'Dieselbe übersichtliche Vorlage im dunklen Design.',
+    list: [
+      { type: 'vwap', s: { period: 'day', b3: false, b4: false, outer: false, labels: false, axis: false } },
+      { type: 'rvwap', s: { axis: false } },
+      { type: 'hvb' },
+      { type: 'keylevels', s: { tails: false, singles: false, pq: false, py: false, w52l: false, w52h: false, dates: false } },
+      { type: 'bigtrades' },
+    ],
+  },
 };
 
 export const DEFAULT_STATE = {
@@ -58,7 +80,7 @@ export const DEFAULT_STATE = {
   tpo: { block: '30m', rowSize: 0, display: 'auto', colors: 'mono', vaPct: 68, ibMin: 60, poc: true, va: true, vaFill: true, ib: true, openClose: true, singles: true, vp: true, vpWidth: 0.3, nakedPoc: true, extendVa: false },
   theme: 'light', candles: 'auto', tz: 'local', sessionOffsetMin: 0,
   session: { mode: 'utc', start: '02:00', end: '22:00', tz: 'Europe/Berlin' }, vaStep: 2,
-  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0, tplV: 0, btV: 0,
+  template: 'bild', indicators: null, tplState: {}, userTpls: [], tpoEdits: {}, colorsV: 0, tplV: 0, btV: 0, paintV: 0, hvbV: 0, vwapV: 0, drawDefaults: {}, drawTpls: {},
   watchlist: ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE', 'SUI', 'LINK', 'AVAX', 'ADA', 'LTC'],
   favTfs: ['1m', '5m', '15m', '1h', '4h', '1D'],
   rightPanel: 'watch', rightOpen: true,

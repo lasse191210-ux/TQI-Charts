@@ -1,7 +1,7 @@
 // Zeichen-Layer auf dem Hauptchart (Lightweight-Charts-Primitive):
 // Linien je Kerze, gefüllte Bänder, horizontale Level ab Zeitpunkt, Boxen, Marker, Blasen,
 // Beschriftungen (ohne Überlappung) und farbige Preis-Labels an der Achse.
-import { floorIndex, tfMs } from '../util.js';
+import { floorIndex, tfMs, inkMap } from '../util.js';
 import { volumeProfile, autoRows } from '../calc/vprofile.js';
 import { drawProfile } from './vpdraw.js';
 import { drawTpoOverlay } from './tpo.js';
@@ -10,8 +10,10 @@ export class Scene {
   constructor() { this.clear(); }
   clear() {
     this.lines = []; this.fills = []; this.levels = []; this.boxes = []; this.marks = [];
-    this.bubbles = []; this.axis = []; this.barBoxes = []; this.profiles = []; this.tpos = [];
+    this.bubbles = []; this.axis = []; this.barBoxes = []; this.profiles = []; this.tpos = []; this.barColors = [];
   }
+  /** Kerze einfärben wie TradingView barcolor(): { t (Zeit der Chart-Kerze), color } – Körper, Rand und Docht. */
+  barColor(o) { this.barColors.push(o); }
   /** TPO-Profile je Session im Kerzenchart: { sessions, o (Einstellungen), blockMs } */
   tpo(o) { this.tpos.push(o); }
   /** Volumenprofil: { prof | dyn, from, to, place, widthFrac, mode, Farben, pocLine, vaLines, extendPoc } */
@@ -88,6 +90,19 @@ export class OverlayPrimitive {
   priceAxisViews() { return this._axisViews; }
 
   setScene(scene) {
+    // dunkles Design: Schwarz (#131722) der zweifarbigen Indikatoren wird hellgrau, sonst wären Linien unsichtbar
+    if (this.app.theme.dark) {
+      const m = (c) => inkMap(c, true);
+      for (const x of scene.lines) { x.color = m(x.color); x.lc = m(x.lc); }
+      for (const x of scene.fills) x.color = m(x.color);
+      for (const x of scene.levels) { x.color = m(x.color); x.lc = m(x.lc); }
+      for (const x of scene.boxes) { x.fill = m(x.fill); x.stroke = m(x.stroke); x.lc = m(x.lc); }
+      for (const x of scene.marks) x.color = m(x.color);
+      for (const x of scene.bubbles) { x.fill = m(x.fill); x.stroke = m(x.stroke); }
+      for (const x of scene.barBoxes) { x.fill = m(x.fill); x.stroke = m(x.stroke); }
+      for (const x of scene.barColors) x.color = m(x.color);
+      for (const x of scene.axis) if (typeof x.bg === 'string' && (/^#131722/i.test(x.bg) || x.bg.startsWith('rgba(19,23,34,'))) { x.bg = m(x.bg); x.fg = '#131722'; }
+    }
     this.scene = scene;
     const s = this.series;
     const dec = this.app.priceDec;
@@ -274,7 +289,7 @@ export class OverlayPrimitive {
           const r = bu.r * hr;
           ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
           ctx.fillStyle = bu.fill; ctx.fill();
-          if (bu.stroke) { ctx.strokeStyle = bu.stroke; ctx.lineWidth = hr; ctx.stroke(); }
+          if (bu.stroke) { ctx.strokeStyle = bu.stroke; ctx.lineWidth = Math.max(0.5, (bu.lw ?? 1)) * hr; ctx.stroke(); }
           if (bu.text && r >= 10 * hr) {
             const fz = Math.max(8, Math.min(12, (r / hr) * 0.55));
             ctx.font = `700 ${Math.round(fz * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
@@ -294,7 +309,7 @@ export class OverlayPrimitive {
           if (m.shape === 'text') {
             // nur Text (z. B. „sfp“ wie in ATAS): über dem Hoch bzw. unter dem Tief
             ctx.fillStyle = m.color;
-            ctx.font = `600 ${Math.round(10.5 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+            ctx.font = `600 ${Math.round((m.fs || 10.5) * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
             ctx.textAlign = 'center'; ctx.textBaseline = m.below ? 'top' : 'bottom';
             ctx.fillText(m.text || '', x, m.below ? y0 + 4 * vr2 : y0 - 4 * vr2);
             ctx.font = `600 ${Math.round(9 * vr2)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
