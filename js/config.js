@@ -1,5 +1,5 @@
 // Grundeinstellungen, Coins, Vorlagen und Farbthemen.
-export const APP = { name: 'TQI Charts', version: '1.4.0', key: 'tqi-charts:v1' };
+export const APP = { name: 'TQI Charts', version: '1.5.0', key: 'tqi-charts:v1' };
 
 export const COINS = [
   ['BTC', 'Bitcoin'], ['ETH', 'Ethereum'], ['SOL', 'Solana'], ['XRP', 'XRP'], ['BNB', 'BNB'], ['DOGE', 'Dogecoin'],

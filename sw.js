@@ -1,5 +1,5 @@
 /* TQI Charts Service Worker: Netzwerk zuerst (immer aktuell), Cache nur als Offline-Rückfall. Börsendaten werden nie abgefangen. */
-const C = 'tqi-charts-v5';
+const C = 'tqi-charts-v6';
 self.addEventListener('install', (e) => { self.skipWaiting(); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== C).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {

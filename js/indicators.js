@@ -498,7 +498,7 @@ const va = {
 const naked = {
   type: 'naked', name: 'Naked Levels (POC, UFA, Singles, Tails)', cat: 'tqi', pane: 'main',
   desc: 'Unberührte POCs, Unfinished Auctions, Single Prints und Tails aus dem 30-Min-Market-Profile. Ein Level zählt nur, solange es nicht berührt wurde.',
-  defaults: { poc: true, pocBasis: 'vol', ufa: true, ufaMin: 2, singles: true, minSingle: 3, tails: true, minTail: 3, zoneEnd: 'touch', touchClose: 'session', touchedDashed: true, tol: 0, history: false, maxHistory: 300, lookback: 60, labelDate: true, rows: 0, pocColor: POC, ufaColor: 'auto', singleColor: INK2, sellTail: INK, buyTail: INK2, boxOpacity: 0.14 },
+  defaults: { poc: true, pocBasis: 'vol', ufa: true, ufaMin: 2, singles: true, minSingle: 3, tails: true, minTail: 3, zoneEnd: 'touch', zoneTouched: 'end', touchClose: 'session', touchedDashed: true, tol: 0, history: false, maxHistory: 300, lookback: 60, labelDate: true, rows: 0, pocColor: POC, ufaColor: 'auto', singleColor: INK2, sellTail: INK, buyTail: INK2, boxOpacity: 0.14 },
   schema: [
     { sec: 'Naked POC' },
     { k: 'poc', label: 'Naked POC anzeigen', t: 'bool' },
@@ -519,6 +519,7 @@ const naked = {
     { k: 'buyTail', label: 'Farbe Buying Tail (unten)', t: 'color' },
     { sec: 'Berührte Level' },
     { k: 'zoneEnd', label: 'Singles/Tails gelten als erledigt bei', t: 'select', opts: [['touch', 'Berührung'], ['fill', 'komplett gefüllt']] },
+    { k: 'zoneTouched', label: 'Berührte Singles/Tails', t: 'select', opts: [['end', 'bis zur ersten Berührung zeichnen, dann schließen'], ['hide', 'ausblenden'], ['extend', 'bis Session-Ende weiterlaufen lassen']] },
     { k: 'touchClose', label: 'Berührte Level schließen', t: 'select', opts: [['session', 'nach Session-Ende'], ['now', 'sofort']] },
     { k: 'touchedDashed', label: 'Berührte Level gestrichelt', t: 'bool' },
     { k: 'tol', label: 'Gilt als berührt ab Abstand (Preis)', t: 'num', min: 0, max: 100000, step: 0.1 },
@@ -537,6 +538,12 @@ const naked = {
     const m30 = c.store('30m').bars;
     const minStart = c.sessStart(c.now) - s.lookback * DAY;
     const items = [];
+    // Berührung im Chart genauer als die 30-Min.-Kerze (bei kleinerer Zeiteinheit)
+    const refine = (tt, lo, hi) => {
+      if (tt == null || s.zoneEnd === 'fill' || !(c.tfMs < 30 * MIN)) return tt;
+      for (let i = lowerBound(c.bars, tt); i < c.bars.length && c.bars[i].t < tt + 30 * MIN; i++) { const b = c.bars[i]; if (b.l <= hi + s.tol && b.h >= lo - s.tol) return b.t; }
+      return tt;
+    };
     const status = (touchedAt) => {
       if (touchedAt == null) return 'open';
       if (s.touchClose === 'session') {
@@ -573,8 +580,9 @@ const naked = {
         if (s.tails && z.sellTail) zones.push({ kind: 'sellTail', ...z.sellTail, label: 'Selling Tail' + lb });
         if (s.tails && z.buyTail) zones.push({ kind: 'buyTail', ...z.buyTail, label: 'Buying Tail' + lb });
         for (const x of zones) {
-          const tt = firstTouch(m30, d.end, x.bottom, x.top, { tol: s.tol, mode: s.zoneEnd === 'fill' ? 'fill' : 'touch' });
-          items.push({ ...x, from: d.start, touched: tt, st: status(tt) });
+          const tt = refine(firstTouch(m30, d.end, x.bottom, x.top, { tol: s.tol, mode: s.zoneEnd === 'fill' ? 'fill' : 'touch' }), x.bottom, x.top);
+          // Standard: sofort geschlossen – die Box endet dort, wo der Preis sie zum ersten Mal berührt
+          items.push({ ...x, from: d.start, touched: tt, st: tt != null && (s.zoneTouched || 'end') !== 'extend' ? 'closed' : status(tt) });
         }
       }
     }
@@ -582,11 +590,22 @@ const naked = {
   },
   draw(s, d, sc, c) {
     const ufaCol = s.ufaColor === 'auto' ? c.theme.ufa : s.ufaColor;
+    const seen = (c._nkSeen ||= new Set()); // gleiche Zone nicht doppelt (Key Levels + Naked Levels)
     let hist = 0;
     for (let k = d.items.length - 1; k >= 0; k--) {
       const x = d.items[k];
-      if (x.st === 'closed') { if (!s.history || hist++ >= s.maxHistory) continue; }
+      const zone = x.kind !== 'poc' && x.kind !== 'ufa';
+      const key = x.kind + '|' + x.from + '|' + (zone ? x.top + '|' + x.bottom : x.p);
+      if (seen.has(key)) continue;
+      seen.add(key);
       const closed = x.st === 'closed';
+      // berührte Singles/Tails: Box vom Entstehen bis zur ersten Berührung (ohne Namen), danach nichts mehr
+      if (zone && closed && (s.zoneTouched || 'end') === 'end') {
+        const col = x.kind === 'single' ? s.singleColor : x.kind === 'sellTail' ? s.sellTail : s.buyTail;
+        sc.box({ from: x.from, to: x.touched, top: x.top, bottom: x.bottom, fill: rgba(col, s.boxOpacity * 0.75), stroke: null, label: null });
+        continue;
+      }
+      if (closed) { if (!s.history || hist++ >= s.maxHistory) continue; }
       const dash = (x.st === 'touched' && s.touchedDashed) || closed ? 'dashed' : null;
       const to = closed ? x.touched : null;
       const alpha = closed ? 0.45 : 1;
@@ -774,7 +793,7 @@ const keylevels = {
   type: 'keylevels', name: 'Key Levels (TPO)', cat: 'tqi', pane: 'main',
   desc: 'Nur die wichtigen Level: Naked POC, Tails, Single Prints, VAH/VAL/POC vom Vortag (TPO), 52-Wochen-Tief sowie VAH/VAL/POC von Vorwoche, Vorquartal und Vorjahr.',
   defaults: {
-    basis: 'tpo', pct: 68, npoc: true, tails: true, singles: true, minSingle: 3, minTail: 2, lookback: 20,
+    basis: 'tpo', pct: 68, npoc: true, tails: true, singles: true, minSingle: 3, minTail: 2, lookback: 20, tailEnd: 'end',
     pd: true, pw: true, pq: true, py: true, w52l: true, w52h: false, rows: 0,
     names: true, dates: true, axis: false, width: 1, pocDash: true, lines: 'full',
     pdColor: INK, pwColor: INK, pqColor: INK, pyColor: INK, pocColor: POC, npocColor: POC, w52Color: INK,
@@ -798,6 +817,7 @@ const keylevels = {
     { k: 'lookback', label: 'nPOC / Singles / Tails: letzte Tage', t: 'int', min: 2, max: 120 },
     { k: 'minSingle', label: 'Single Prints: min. Zeilen', t: 'int', min: 1, max: 100 },
     { k: 'minTail', label: 'Tails: min. Zeilen', t: 'int', min: 1, max: 100 },
+    { k: 'tailEnd', label: 'Berührte Singles / Tails', t: 'select', opts: [['end', 'bis zur ersten Berührung zeichnen, dann schließen'], ['hide', 'ausblenden'], ['extend', 'bis Session-Ende weiterlaufen lassen']] },
     { sec: 'Stil', tab: 'style' },
     { k: 'lines', label: 'Linien', t: 'select', opts: [['full', 'ab Entstehung bis zum Rand (durchgezogen)'], ['short', 'nur kurz rechts']] },
     { k: 'dates', label: 'Datum an den Namen (pdVAL 25.11.)', t: 'bool' },
@@ -818,7 +838,7 @@ const keylevels = {
     return 'Key Levels ' + l.join(' ');
   },
   nakedS(s) {
-    return { ...naked.defaults, poc: s.npoc, pocBasis: s.basis, ufa: false, singles: s.singles, minSingle: s.minSingle, tails: s.tails, minTail: s.minTail, lookback: s.lookback, labelDate: s.dates !== false, rows: s.rows, history: false, pocColor: s.npocColor, singleColor: s.singleColor, sellTail: s.sellTail, buyTail: s.buyTail, boxOpacity: s.boxOpacity };
+    return { ...naked.defaults, poc: s.npoc, pocBasis: s.basis, ufa: false, singles: s.singles, minSingle: s.minSingle, tails: s.tails, minTail: s.minTail, zoneTouched: s.tailEnd || 'end', lookback: s.lookback, labelDate: s.dates !== false, rows: s.rows, history: false, pocColor: s.npocColor, singleColor: s.singleColor, sellTail: s.sellTail, buyTail: s.buyTail, boxOpacity: s.boxOpacity };
   },
   needs(s, c) {
     const today = c.sessStart(c.now);
